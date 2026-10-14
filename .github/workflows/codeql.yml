@@ -8,9 +8,9 @@ permissions: read-all
 
 on:
   workflow_dispatch:
-  schedule:
-    # Run every day at 22:00 UTC
-    - cron: '0 22 * * *'
+  push:
+    branches: [main]
+    paths: [.github/workflows/codeql.yml]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,8 +24,8 @@ jobs:
     name: CodeQL (C/C++)
     runs-on: ubuntu-22.04
     timeout-minutes: 240
-    # Disabling this workflow for non ispc/ispc repo.
-    if: github.repository == 'ispc/ispc'
+    # Test copy: run the real ISPC scan only in this fork.
+    if: github.repository == 'Lycan7hropus/ispc'
     permissions:
       security-events: write
       contents: read
@@ -92,12 +92,14 @@ jobs:
           category: "/language:c-cpp"
 
       - name: Generate Security Report
+        if: github.repository == 'ispc/ispc'
         uses: rsdmike/github-security-report-action@a3d8cc051bc89f1b622d396adab901aa73857a29 # v4.1.0
         with:
           template: report
           token: ${{ secrets.SECURITY_TOKEN }}
 
       - name: GitHub Upload Release Artifacts
+        if: github.repository == 'ispc/ispc'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: report
