@@ -5,9 +5,6 @@ name: CodeQL Fixer Test Context
       prompt:
         required: true
         type: string
-    secrets:
-      ANTHROPIC_API_KEY:
-        required: true
 permissions: {}
 jobs:
   claude:
