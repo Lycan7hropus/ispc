@@ -1,0 +1,156 @@
+name: CodeQL Fixer Controlled Tests
+'on':
+  push:
+    branches:
+    - main
+    paths:
+    - .github/workflows/codeql-fixer-controlled-tests.yml
+    - .github/workflows/tests/codeql-fixer/**
+  workflow_dispatch: null
+permissions: {}
+jobs:
+  select-alerts:
+    name: Select the controlled 10-alert fixture
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.fixture.outputs.matrix }}
+    steps:
+    - id: fixture
+      env:
+        BASE_SHA: ${{ github.sha }}
+      run: |
+        python3 - <<'PYFIXTURE'
+        import json,os
+        items=[dict(number=n,analyzed_sha=os.environ['BASE_SHA'],rule='test/fixture',path=f'tests/fixer-fixture-{n}.txt',line=1) for n in range(1,11)]
+        with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+            f.write('matrix='+json.dumps(items,separators=(',',':'))+'\n')
+        PYFIXTURE
+  investigate-alerts:
+    name: 'Fixture alert #${{ matrix.alert.number }}'
+    needs: select-alerts
+    if: needs.select-alerts.outputs.matrix != '[]'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        alert: ${{ fromJSON(needs.select-alerts.outputs.matrix) }}
+    steps:
+    - name: Check out the fixture scripts
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      with:
+        persist-credentials: false
+    - name: Generate controlled reports without calling Claude
+      env:
+        ALERT_NUMBER: ${{ matrix.alert.number }}
+        ANALYZED_SHA: ${{ matrix.alert.analyzed_sha }}
+      run: python3 .github/workflows/tests/codeql-fixer/worker-fixture.py
+    - name: Upload the result
+      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+      with:
+        name: codeql-alert-${{ matrix.alert.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/codeql-result
+        overwrite: 'true'
+        if-no-files-found: error
+        retention-days: '14'
+  collect-results:
+    name: Run the actual result collector
+    needs:
+    - select-alerts
+    - investigate-alerts
+    if: ${{ !cancelled() && needs.select-alerts.result == 'success' && needs.select-alerts.outputs.matrix != '[]' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      has_fixes: ${{ steps.validate.outputs.has_fixes }}
+    steps:
+    - name: Download the results of successful investigations
+      continue-on-error: true
+      uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3
+      with:
+        pattern: codeql-alert-*-${{ github.run_id }}-${{ github.run_attempt }}
+        merge-multiple: 'true'
+        path: results
+    - name: Validate each result
+      id: validate
+      env:
+        MATRIX: ${{ needs.select-alerts.outputs.matrix }}
+      run: |
+        set -euo pipefail
+        mkdir -p batch/patches
+        : > batch/results.jsonl
+        while IFS= read -r alert; do
+          n=$(jq .number <<< "$alert")
+          file="results/$n/result.json"
+          # A result must match its alert and the contract. Its strings are
+          # only ever used as text, never as commands.
+          if [ -f "$file" ] && jq -e --argjson alert "$alert" '
+              keys == (["alert_number", "analyzed_sha", "verdict", "evidence", "counterexample_checks",
+                        "unresolved_fact", "validation", "fix_available", "execution_status", "error"] | sort) and
+              (tojson | utf8bytelength) <= 8192 and
+              .alert_number == $alert.number and .analyzed_sha == $alert.analyzed_sha and
+              (.verdict | IN(null, "bug", "false-positive", "unsure", "already-resolved")) and
+              (.evidence | type == "string") and
+              (.counterexample_checks | type == "array" and all(.[]; type == "string")) and
+              (.validation | type == "array" and
+                all(.[]; (.command | type == "string") and (.passed | type == "boolean") and (.summary | type == "string"))) and
+              (.fix_available | type == "boolean") and (.verdict == "bug" or (.fix_available | not)) and
+              (.unresolved_fact == null or (.unresolved_fact | type == "string")) and
+              (.error == null or (.error | type == "string")) and
+              (if .execution_status == "complete" then
+                 .verdict != null and (.evidence | length > 0) and
+                 (.verdict != "unsure" or (.unresolved_fact | type == "string" and length > 0)) and
+                 (.verdict != "bug" or (.fix_available and (.validation | length > 0)))
+               else .execution_status == "incomplete" end)' "$file" > /dev/null; then
+            result=$(jq -c --argjson alert "$alert" '. + {alert: $alert}' "$file")
+          else
+            result=$(jq -nc --argjson alert "$alert" '{alert_number: $alert.number, alert: $alert, verdict: null,
+              execution_status: "incomplete", error: "missing or invalid result"}')
+          fi
+          if jq -e '.execution_status == "complete" and .verdict == "bug"' <<< "$result" > /dev/null; then
+            if [ -s "results/$n/fix.patch" ]; then
+              cp "results/$n/fix.patch" "batch/patches/$n.patch"
+            else
+              result=$(jq -c '.execution_status = "incomplete" | .error = "bug verdict without a patch"' <<< "$result")
+            fi
+          fi
+          echo "$result" >> batch/results.jsonl
+          jq -r '"- Alert #\(.alert_number): \(.verdict // "no verdict"), \(.execution_status)."' <<< "$result" >> "$GITHUB_STEP_SUMMARY"
+        done < <(jq -c '.[]' <<< "$MATRIX")
+        jq -s . batch/results.jsonl > batch/results.json
+        rm batch/results.jsonl
+        echo "has_fixes=$(jq 'any(.[]; .execution_status == "complete" and .verdict == "bug")' batch/results.json)" >> "$GITHUB_OUTPUT"
+    - name: Upload the validated batch
+      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+      with:
+        name: codeql-batch-${{ github.run_id }}-${{ github.run_attempt }}
+        path: batch
+        overwrite: 'true'
+        if-no-files-found: error
+        retention-days: '14'
+    - name: Assert the mixed batch and patch set
+      run: |
+        set -euo pipefail
+        jq -e 'length == 10 and all(.[]; .execution_status == "complete") and ([.[] | select(.verdict == "bug")] | length) == 5 and ([.[] | select(.verdict == "unsure")] | length) == 3 and ([.[] | select(.verdict == "false-positive")] | length) == 2' batch/results.json > /dev/null
+        jq -e 'any(.[]; .alert_number == 5 and .validation[0].passed == false)' batch/results.json > /dev/null
+        test "$(find batch/patches -name '*.patch' | wc -l)" -eq 5
+        echo '## Controlled matrix: 10 reports, 5 patches, 3 unsure, 2 false positives' >> "$GITHUB_STEP_SUMMARY"
+        echo 'Reports are fixtures, not Claude investigations.' >> "$GITHUB_STEP_SUMMARY"
+  verify-contracts:
+    name: Test actual Bash contracts and Git leases
+    needs: collect-results
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      with:
+        persist-credentials: false
+    - name: Run controlled contract tests
+      run: |
+        set -euo pipefail
+        python3 -m venv "$RUNNER_TEMP/fixer-tests-venv"
+        "$RUNNER_TEMP/fixer-tests-venv/bin/python" -m pip install --disable-pip-version-check PyYAML==6.0.3
+        "$RUNNER_TEMP/fixer-tests-venv/bin/python" .github/workflows/tests/codeql-fixer/contract-tests.py
