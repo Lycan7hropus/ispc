@@ -52,5 +52,6 @@ jobs:
         github.event.workflow_run.head_repository.full_name == github.repository))
     permissions: {}
     uses: ./.github/workflows/codeql-fixer-test-context.yml
+    secrets: inherit
     with:
       prompt: Test the actual integrator conditions, without calling Claude.

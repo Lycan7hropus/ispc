@@ -11,3 +11,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo "Trigger the preflight through a real workflow_run event."
+
+# Recheck the original required-secret contract with secrets: inherit.
