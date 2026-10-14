@@ -1,0 +1,56 @@
+name: CodeQL Fixer Test Preflight
+on:
+  workflow_run:
+    workflows: [CodeQL Fixer Test Trigger]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions: {}
+jobs:
+  configuration:
+    if: >-
+      github.repository == 'Lycan7hropus/ispc' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      security-events: read
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      HAS_REGION: ${{ secrets.AWS_REGION != '' }}
+      HAS_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK != '' }}
+      HAS_ANTHROPIC: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+      EVENT_NAME: ${{ github.event_name }}
+    steps:
+      - name: Inspect configuration without exposing secret values
+        run: |
+          set -euo pipefail
+          test "$GH_REPO" = Lycan7hropus/ispc
+          {
+            echo "## Fork preflight"
+            echo "- Caller event: $EVENT_NAME"
+            echo "- AWS_REGION present: $HAS_REGION"
+            echo "- AWS_BEARER_TOKEN_BEDROCK present: $HAS_BEDROCK"
+            echo "- Legacy ANTHROPIC_API_KEY present: $HAS_ANTHROPIC"
+          } >> "$GITHUB_STEP_SUMMARY"
+          issues=$(gh api "repos/$GH_REPO" --jq .has_issues)
+          echo "- Issues enabled: $issues" >> "$GITHUB_STEP_SUMMARY"
+          if gh api "repos/$GH_REPO/code-scanning/alerts?state=open&tool_name=CodeQL&ref=refs/heads/main&per_page=100" > alerts.json; then
+            echo "- Code Scanning API works; first-page open CodeQL alerts: $(jq length alerts.json)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Code Scanning API unavailable; inspect the HTTP error in the job log. A first scan may be needed." >> "$GITHUB_STEP_SUMMARY"
+          fi
+  integrator-context:
+    if: >-
+      github.repository == 'Lycan7hropus/ispc' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    permissions: {}
+    uses: ./.github/workflows/codeql-fixer-test-context.yml
+    with:
+      prompt: Test the actual integrator conditions, without calling Claude.

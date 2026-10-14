@@ -1,0 +1,68 @@
+name: CodeQL Fixer Test Context
+'on':
+  workflow_call:
+    inputs:
+      prompt:
+        required: true
+        type: string
+permissions: {}
+jobs:
+  claude:
+    if: |
+      github.repository == 'Lycan7hropus/ispc' &&
+      (github.event_name == 'workflow_dispatch' ||
+      inputs.prompt != '' ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') &&
+        (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude') &&
+        (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude') &&
+        (github.event.review.author_association == 'OWNER' || github.event.review.author_association == 'MEMBER' || github.event.review.author_association == 'COLLABORATOR')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')) &&
+        (github.event.issue.author_association == 'OWNER' || github.event.issue.author_association == 'MEMBER' || github.event.issue.author_association == 'COLLABORATOR')))
+    runs-on: ubuntu-22.04
+    permissions: {}
+    steps:
+    - name: Determine if build is needed
+      id: build_check
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        INPUT_PROMPT: ${{ inputs.prompt }}
+        COMMENT_BODY: ${{ github.event.comment.body }}
+        REVIEW_BODY: ${{ github.event.review.body }}
+        ISSUE_BODY: ${{ github.event.issue.body }}
+      run: |
+        needed=false
+        case "$EVENT_NAME" in
+          workflow_dispatch|workflow_call)
+            needed=true ;;
+          *)
+            # The job-level if: already guarantees an "@claude" mention, so a
+            # mention of "fix" anywhere in the triggering text means a build
+            # task rather than Q&A/review.
+            if printf '%s\n%s\n%s' "$COMMENT_BODY" "$REVIEW_BODY" "$ISSUE_BODY" \
+                | grep -qiE '\bfix(es|ed|ing)?\b'; then
+              needed=true
+            fi ;;
+        esac
+        if [ -n "$INPUT_PROMPT" ]; then needed=true; fi
+        echo "needed=$needed" >> "$GITHUB_OUTPUT"
+        echo "Build needed: $needed"
+    - name: Assert the real reusable-workflow context
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        BUILD_NEEDED: ${{ steps.build_check.outputs.needed }}
+        TRACK_PROGRESS: ${{ !inputs.prompt && github.event_name != 'workflow_dispatch' && github.event_name != 'workflow_call' }}
+      run: |
+        set -euo pipefail
+        case "$EVENT_NAME" in workflow_run|workflow_dispatch) ;; *) exit 1 ;; esac
+        test "$BUILD_NEEDED" = true
+        test "$TRACK_PROGRESS" = false
+        {
+          echo "## Integrator context passed"
+          echo "- Inherited event: $EVENT_NAME"
+          echo "- Integrator job condition accepted the prompt"
+          echo "- Real build_check returned: $BUILD_NEEDED"
+          echo "- Real track_progress expression returned: $TRACK_PROGRESS"
+          echo "- This probe does not invoke Claude or run an ISPC build"
+        } >> "$GITHUB_STEP_SUMMARY"

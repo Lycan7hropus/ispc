@@ -1,0 +1,13 @@
+name: CodeQL Fixer Test Trigger
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/codeql-fixer-test-trigger.yml]
+  workflow_dispatch:
+permissions: {}
+jobs:
+  trigger:
+    if: github.repository == 'Lycan7hropus/ispc'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Trigger the preflight through a real workflow_run event."
