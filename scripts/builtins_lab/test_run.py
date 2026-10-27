@@ -148,6 +148,16 @@ Path(args["benchmark_out"]).write_text(json.dumps({"benchmarks": [{
         else:
             self.fail("timed-out command left a running descendant")
 
+    def test_both_builds_missing_frozen_case_is_failure(self):
+        self.job["expected_cases"] = ["shuffle", "required_case"]
+        out = self.root / "inventory"
+        out.mkdir()
+        with self.assertRaisesRegex(ValueError, "frozen inventory"):
+            run.experiment(self.job, out)
+        report = json.loads((out / "report.json").read_text())
+        self.assertEqual(report["status"], "failed")
+        self.assertFalse(list(out.glob("candidate-*.json")))
+
     def test_missing_checks_rejected(self):
         self.job["checks"] = []
         with self.assertRaisesRegex(ValueError, "correctness check"):

@@ -10,12 +10,11 @@ directories. This checks semantics, not speed. Only legal source indices are use
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
 import shutil
-import signal
 import subprocess
 import sys
+from run import execute as execute_command
 
 
 TYPES = {
@@ -184,20 +183,7 @@ def main():
     def execute(argv, label):
         report["commands"].append(argv)
         log_path = out / f"{label}.log"
-        with log_path.open("w") as log:
-            with subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
-                                  start_new_session=True) as process:
-                try:
-                    code = process.wait(timeout=180)
-                except BaseException:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    process.wait()
-                    raise
-                if code:
-                    raise subprocess.CalledProcessError(code, argv)
+        execute_command(argv, log_path, 180)
         return log_path.read_text().strip()
 
     try:

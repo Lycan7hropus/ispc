@@ -9,6 +9,7 @@ See benchmarks/README.md for the job format and interpretation of results.
 """
 
 import argparse
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
@@ -83,25 +84,109 @@ def compare(samples, min_gain, max_regression):
     return dict(status=status, cases=rows)
 
 
-def command(argv, output, timeout, cpu):
+def stop_process_tree(root_pid):
+    """Stop descendants before their parents, including separate sessions.
+
+    Freeze each parent before discovering its children so compiler drivers
+    cannot launch new work while cleanup walks /proc. Identify processes by
+    start time as well as PID to avoid signaling a reused PID.
+    """
+    owned = []
+    seen = set()
+
+    def identity(pid):
+        try:
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
+            return fields[19]  # /proc stat field 22: starttime.
+        except (FileNotFoundError, ProcessLookupError):
+            return None
+
+    def signal_owned(pid, started, signum):
+        if started is None or pid == os.getpid() or identity(pid) != started:
+            return
+        try:
+            os.kill(pid, signum)
+        except ProcessLookupError:
+            pass
+
+    def visit(pid):
+        if pid in seen or pid == os.getpid():
+            return
+        seen.add(pid)
+        started = identity(pid)
+        if started is None:
+            return
+        owned.append((pid, started))
+        signal_owned(pid, started, signal.SIGSTOP)
+        # Children may belong to any thread of a compiler/build process.
+        try:
+            tasks = list(Path(f"/proc/{pid}/task").iterdir())
+        except (FileNotFoundError, ProcessLookupError):
+            return
+        for task in tasks:
+            try:
+                children = (task / "children").read_text().split()
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            for child in children:
+                visit(int(child))
+
+    try:
+        visit(root_pid)
+    finally:
+        # Kill children first while the stopped root still owns the tree.
+        # Never signal any process group: nested helpers may share ours.
+        for pid, started in reversed(owned):
+            signal_owned(pid, started, signal.SIGKILL)
+
+
+def execute(argv, output, timeout, *, cwd=None, env=None):
     if not isinstance(argv, list) or not argv or not all(isinstance(x, str) for x in argv):
         raise ValueError("commands must be nonempty arrays of strings")
+    managed = os.environ.get("ISPC_BUILTINS_MANAGED_GROUP") == "1"
+    process_env = dict(os.environ if env is None else env)
+    process_env["ISPC_BUILTINS_MANAGED_GROUP"] = "1"
+
+    def stop(process):
+        try:
+            if managed:
+                process.kill()
+            else:
+                os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
     with output.open("w") as log:
-        with subprocess.Popen(["taskset", "--cpu-list", str(cpu), *argv], stdout=log,
-                              stderr=subprocess.STDOUT, start_new_session=True) as process:
+        with subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
+                              cwd=cwd, env=process_env, start_new_session=not managed) as process:
             try:
                 code = process.wait(timeout=timeout)
             except BaseException:
-                # A check may spawn compilers or tests. Stop the whole group so
-                # abandoned children cannot contaminate subsequent measurements.
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                stop_process_tree(process.pid)
+                stop(process)
                 process.wait()
                 raise
+            finally:
+                # Helpers join the outer executor's group. Its owner also cleans
+                # up remaining descendants if a helper exits early or fails.
+                if not managed:
+                    stop(process)
             if code:
                 raise subprocess.CalledProcessError(code, process.args)
+
+
+def command(argv, output, timeout, cpu):
+    if not isinstance(argv, list) or not argv or not all(isinstance(x, str) for x in argv):
+        raise ValueError("commands must be nonempty arrays of strings")
+    execute(["taskset", "--cpu-list", str(cpu), *argv], output, timeout)
+
+
+@contextmanager
+def host_access(exclusive):
+    path = Path(tempfile.gettempdir()) / f"ispc-builtins-host-{os.getuid()}.lock"
+    with path.open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        yield
 
 
 def sha256(path):
@@ -130,6 +215,12 @@ def validate(job):
         raise ValueError("cpu must name one CPU available to this process")
     if job.get("metric", "cpu_time") not in ("cpu_time", "real_time"):
         raise ValueError("metric must be cpu_time or real_time")
+    if "expected_cases" in job:
+        cases = job["expected_cases"]
+        if (not isinstance(cases, list) or not cases or
+                not all(isinstance(name, str) and name for name in cases) or
+                len(set(cases)) != len(cases)):
+            raise ValueError("expected_cases must be a nonempty list of unique names")
     for label in ("baseline", "candidate"):
         path = Path(job[label])
         if not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
@@ -140,7 +231,7 @@ def experiment(job, out):
     validate(job)
     # A single host-wide queue for cooperating workers, including workers in other worktrees.
     lock_path = Path(tempfile.gettempdir()) / f"ispc-builtins-lab-{os.getuid()}.lock"
-    with lock_path.open("a") as lock:
+    with host_access(exclusive=True), lock_path.open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         report = dict(status="failed", job=job, platform=platform.platform(),
                       affinity=sorted(os.sched_getaffinity(0)),
@@ -164,6 +255,8 @@ def experiment(job, out):
                         argv.append(f"--benchmark_filter={job['filter']}")
                     command(argv, out / f"{label}-{i}.log", timeout, cpu)
                     cases, context = read_cases(raw, job.get("metric", "cpu_time"))
+                    if "expected_cases" in job and set(cases) != set(job["expected_cases"]):
+                        raise ValueError("benchmark cases differ from the frozen inventory")
                     samples[label].append(cases)
                     contexts[label].append(context)
             for label in ("baseline", "candidate"):

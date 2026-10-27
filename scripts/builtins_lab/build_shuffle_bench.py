@@ -152,8 +152,9 @@ def main():
     parser.add_argument('--cxx', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--type', default='int16', choices=('int16', 'int64', 'double'))
+    parser.add_argument('--source-root', type=Path, help='pinned ISPC checkout containing Google Benchmark')
     args = parser.parse_args()
-    root = Path(__file__).resolve().parents[2]
+    root = args.source_root.resolve() if args.source_root else Path(__file__).resolve().parents[2]
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     fixture, host = out / 'contexts.ispc', out / 'contexts.cpp'

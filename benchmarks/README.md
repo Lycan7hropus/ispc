@@ -206,6 +206,85 @@ or native vector instructions. Inspect final caller assembly on the actual
 toolchain before proposing an optimization. Keep failed attempts and restore
 the original implementation when none stays within the frozen regression budget.
 
-The next implementation steps are automated build capture and an agent adapter that
-submits candidates to this fixed evaluator. Larger target families should reuse
-the runner while supplying their own reviewed semantic cases.
+### Submitting a patch to the fixed evaluator
+
+`evaluate.py` runs the complete shuffle pilot without manual build or measurement
+steps. A maintainer provides a policy JSON; a worker provides only a hypothesis
+and an absolute patch path. For example, copy and adjust this policy:
+
+```json
+{
+  "repo": "/absolute/ispc",
+  "baseline_revision": "818b8e23a35c852d9cc19b14d5510c4e7fadbcc0",
+  "llvm": "/absolute/llvm/bin",
+  "cache": "/absolute/ispc-lab-workers",
+  "type": "int64",
+  "cpu": 2,
+  "runs": 3,
+  "repetitions": 3,
+  "min_gain": 0.03,
+  "max_regression": 0.02,
+  "jobs": 2,
+  "timeout": 1800
+}
+```
+
+Use a supported LLVM with the ISPC patches and a full baseline commit SHA.
+Replace all paths and select an available CPU. `timeout` is seconds per stage.
+The first invocation requires network access to initialize pinned submodules.
+The policy, toolchain and evaluator are trusted inputs; keep them separate from
+worker-editable proposals. The request has exactly these two fields:
+
+```json
+{
+  "hypothesis": "Describe a testable code generation improvement",
+  "patch": "/absolute/candidate.patch"
+}
+```
+
+```bash
+python3 scripts/builtins_lab/evaluate.py request.json --policy policy.json \
+  --worker worker-1 --output /absolute/new/experiment
+```
+
+The current adapter accepts content changes only to the existing
+`builtins/target-avx2-i32x8.ll`. It rejects edits to tests, benchmarks, evaluator,
+file modes, new files and other targets. The submission cannot override tests,
+case inventory, flags or budgets. These are cooperative workflow checks, not an
+OS sandbox for hostile code. Expanding the allowed family requires review.
+
+Each worker owns a separate detached worktree and incremental build directory.
+Baseline cache identity includes the commit, LLVM executable and resolved shared
+library hashes, CMake flags, and build schema. Evaluator hashes are frozen in
+each evaluation; fixtures and correctness checks are regenerated rather than
+cached. This permits driver fixes without rebuilding an identical compiler.
+The reusable baseline marker
+is published only after successful build and lit tests. Later submissions reuse
+the frozen baseline executable and incrementally rebuild the candidate. A worker
+lock protects the checkout through restoration; do not edit owned worker trees.
+Build/test stages share host access, while measurements request exclusive host
+access. This prevents cooperating adapters from compiling during another's
+measurements. Unrelated processes, other users and VM host activity remain outside
+this coordination. Commands run by nested lab helpers share their owner's process
+group. Timeout cleanup also walks owned Linux descendants, covering compiler
+processes that create separate sessions or groups.
+
+Every candidate passes the independent bitwise oracle, all caller-context checks,
+lit tests and existing shuffle functional tests before timing starts. The VNNI
+child is compiled separately; its runtime status remains explicitly unverified.
+The discovery phase uses an exact inventory of 12 cases. Only a qualifying result
+triggers fresh confirmation across all 48 cases, including unused permutations.
+The raw runner rejects a missing frozen case even if both builds omit it.
+
+`evaluation.json` records stages, commands, hashes, build environment, decisions
+and errors. Outputs retain the submitted patch, policy/request, frozen evaluator,
+CMake cache, generated sources, assembly, check logs and raw measurements. Failed
+submissions retain an audit record. The original builtin is restored in the owned
+worker even after a failed build; candidate binaries and evidence remain available.
+A hard process/host crash can require manual inspection of that worker before reuse.
+
+Statuses are `confirmed_for_review`, `no_material_improvement`, `regression`,
+`inconclusive`, or `failed`. Exit codes are 0 for the first two, 2 for regression or
+inconclusive, and 1 for failure. No status commits or merges a patch automatically.
+The adapter is a reusable submission boundary, independent of an agent provider.
+Larger target families need their own reviewed semantic cases and build policies.
