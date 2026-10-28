@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import statistics
 import subprocess
@@ -25,7 +26,44 @@ def classify(ratios, margin=0.05):
     return 'unclear'
 
 
-def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=5, batch_ms=5):
+BODY_OPS = {'vmovdqu', 'vmovdqa', 'vpbroadcastq', 'vpcmpeqq', 'vpand', 'vpxor',
+            'vpor', 'vptest', 'vmovmskpd', 'vpmovmskb', 'vpermq', 'cmpl', 'cmpq',
+            'testl', 'testq', 'movq', 'sete', 'setz', 'movzbl', 'xorl', 'andl', 'orl'}
+BODY_REGISTER = re.compile(r'%(?:(?:xmm|ymm)(?:[0-9]|1[0-5])|rax|eax|al|r(?:9|10|11)d?)$')
+BODY_MEMORY = re.compile(r'(0|8|16|24|32|40|48|56)?\(%rdi\)$')
+
+
+def validate_body(body):
+    # Narrow trusted-input dialect, not a sandbox against hostile assembler.
+    lines = []
+    for original in body.splitlines():
+        line = original.split('#', 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2 or parts[0] not in BODY_OPS:
+            raise ValueError('body opcode/directive/control flow not allowed: ' + line)
+        operands = [value.strip() for value in parts[1].split(',')]
+        if not 1 <= len(operands) <= 4:
+            raise ValueError('invalid body operands')
+        for index, operand in enumerate(operands):
+            if BODY_REGISTER.fullmatch(operand) or re.fullmatch(r'\$(?:0x[0-9a-fA-F]+|[0-9]+)', operand):
+                continue
+            memory = BODY_MEMORY.fullmatch(operand)
+            if memory and index == 0:
+                size = 8 if parts[0] in {'vpbroadcastq', 'cmpq', 'testq', 'movq'} else 4 if parts[0] in {'cmpl', 'testl'} else 32
+                if int(memory.group(1) or 0) + size <= 64:
+                    continue
+            raise ValueError('body touches frame state, writes memory, or has invalid operand: ' + operand)
+        if not BODY_REGISTER.fullmatch(operands[-1]):
+            raise ValueError('body destination must be a scratch register')
+        lines.append(line)
+    if not lines or len(lines) > 64:
+        raise ValueError('body must contain 1..64 instructions')
+    return '\n'.join(lines) + '\n'
+
+
+def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=5, batch_ms=5, body_mode=False):
     started = time.monotonic()
     if cpu not in os.sched_getaffinity(0):
         raise ValueError('CPU unavailable')
@@ -40,13 +78,15 @@ def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=5, batch_ms=5
     if not compiler.is_file():
         raise ValueError('C++ compiler not found')
     sources = {label: Path(path).absolute() for label, path in [('baseline', baseline), ('candidate', candidate)]}
-    if any(p.suffix not in ('.S', '.s', '.cpp', '.so') or not p.is_file() for p in sources.values()):
-        raise ValueError('provide trusted .S/.s/.cpp kernel source or prebuilt .so')
+    suffixes = ('.inc',) if body_mode else ('.S', '.s', '.cpp', '.so')
+    if any(p.suffix not in suffixes or not p.is_file() for p in sources.values()):
+        raise ValueError('body mode requires .inc; kernel mode requires .S/.s/.cpp/.so')
     output = Path(output).absolute()
     output.mkdir(parents=True, exist_ok=False)
     report = dict(status='running', level='T0', fixture='reduce_equal_i64_all_on_v1',
                   cpu=cpu, groups=groups, pairs=pairs, batch_ms=batch_ms,
-                  correctness_scope='Independent all-on eight-lane i64 oracle; no mixed masks or ISPC integration.',
+                  framing='common_frame_v1' if body_mode else 'kernel_owned',
+                  correctness_scope='Independent all-on eight-lane i64 oracle with disjoint buffers; no mixed masks or ISPC integration.',
                   timing_unit='TSC reference ticks, not core cycles; wall nanoseconds also retained.',
                   limitation='Isolated out-of-line kernels/hypotheses are not proof of optimized ISPC caller behavior. No patch promotion.',
                   compiler_sha256=runner.sha256(compiler), screen_sha256=runner.sha256(Path(__file__)),
@@ -68,10 +108,24 @@ def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=5, batch_ms=5
             harness = output / 'screen_kernel.cpp'
             shutil.copyfile(Path(__file__).with_name('screen_kernel.cpp'), harness)
             report['harness_sha256'] = runner.sha256(harness)
+            frame = None
+            if body_mode:
+                frame_path = output / 'screen_frame.S'
+                shutil.copyfile(Path(__file__).with_name('screen_frame.S'), frame_path)
+                frame = frame_path.read_text()
+                if frame.count('/* BODY_INSERTION_POINT */') != 1:
+                    raise ValueError('invalid common frame')
+                report['frame_sha256'] = runner.sha256(frame_path)
+                report['layout_limitation'] = 'Common instructions do not remove layout effects: body length can shift later addresses and branch encodings.'
             for label, source in sources.items():
                 frozen = output / (label + source.suffix)
                 shutil.copyfile(source, frozen)
                 report['sources'][label] = dict(original=str(source), sha256=runner.sha256(frozen))
+                if body_mode:
+                    body = validate_body(frozen.read_text())
+                    frozen = output / (label + '.S')
+                    frozen.write_text(frame.replace('/* BODY_INSERTION_POINT */', body))
+                    report['sources'][label]['expanded_sha256'] = runner.sha256(frozen)
                 library = output / (label + '.so')
                 if source.suffix != '.so':
                     command(label + '-build', [compiler, '-shared', '-fPIC', '-O2', '-std=c++17',
@@ -107,8 +161,9 @@ def main():
     parser.add_argument('--groups', type=int, default=32)
     parser.add_argument('--pairs', type=int, default=5)
     parser.add_argument('--batch-ms', type=int, default=5)
+    parser.add_argument('--body-mode', action='store_true', help='wrap .inc primitives in one immutable loop/output frame')
     args = parser.parse_args()
-    report = screen(args.baseline, args.candidate, args.cxx, args.output, args.cpu, args.groups, args.pairs, args.batch_ms)
+    report = screen(args.baseline, args.candidate, args.cxx, args.output, args.cpu, args.groups, args.pairs, args.batch_ms, args.body_mode)
     print(json.dumps({key: report[key] for key in ('status', 'elapsed_seconds', 'build_seconds', 'measurement_seconds')}, indent=2))
     for case in report['result']['cases']:
         print(case['name'], case['screen_status'], round(case['median_ratio'], 4))

@@ -323,6 +323,37 @@ hashes, commands and raw pairs remain reviewable. The common per-user host lock 
 overlap with other lab timings. Passing T0 does not prove the compiler emits this
 code or that the gain survives inlining, masks, constants or a different workload.
 
+For primitive instruction comparisons, prefer `--body-mode`. Both `.inc` inputs
+are inserted into the same retained `screen_frame.S`; agents cannot change loop
+updates, repetition, conditional output handling or exits through that interface.
+For an identity control, use the same body on both sides:
+
+```bash
+python3 scripts/builtins_lab/screen.py --body-mode \
+  --baseline scripts/builtins_lab/screen_examples/reduce_equal_body.inc \
+  --candidate scripts/builtins_lab/screen_examples/reduce_equal_body.inc \
+  --cxx /absolute/llvm/bin/clang++ --cpu 2 --output /absolute/new/body-identity
+```
+
+A body reads one unaligned 64-byte group through `rdi`, returns a normalized 0/1
+in `eax`, and may clobber only vector registers, `rax`, `r9`–`r11` and flags.
+The shared frame normalizes the return width before storing a 64-bit flag. It
+provides disjoint input/output buffers; overlapping-buffer equivalence is not
+established. The narrow trusted-input dialect rejects directives, labels, calls,
+branches, stores, protected-register operands and reads outside that group.
+This is not a hostile assembler sandbox; semantic correctness still needs the
+independent oracle and source review. Raw bodies, expanded assembly and frame
+hashes are retained. Different body lengths can still shift later addresses and
+branch encodings, so a common frame does not eliminate all layout effects.
+
+Keep whole-kernel mode for explicit scheduling/loop studies and label those
+conclusions accordingly. A gain from deleted loop instructions is not evidence of
+a better builtin primitive. Likewise, retain actual LLVM/ISPC-emitted bodies when
+checking compiler correspondence: a plausible hand-written instruction sequence
+may differ from optimized lowering. T1 can reuse retained compiler/benchmark
+binaries for a small frozen caller panel; report preparation/build cost separately
+and never relabel a short panel as complete acceptance.
+
 During agent tasks, save artifacts first, stop after one bounded variant, and send
 only the selected idea to T1/T2. Use profiling for a specific unresolved mechanism;
 do not make a broad profile a prerequisite for every cheap kernel screen. Candidate

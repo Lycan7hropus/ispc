@@ -178,7 +178,10 @@ do not invent application-frequency weights or claim universal CPU wins.
 
 Use staged validation; do not run the complete evaluator for every idea.
 T0: first save a tiny standalone kernel comparison and minimal independent oracle.
-Use screen.py for the supported eight-lane all-on i64 fixture; another family needs
+Use screen.py --body-mode for the supported eight-lane all-on i64 primitive;
+keep loop/output framing identical and use an identity control first. Whole-kernel
+scheduling studies must be labeled separately. Verify actual LLVM/ISPC lowering
+before claiming a hand-written body corresponds to production code. Another family needs
 its own reviewed small fixture. Compile only the tiny kernels/driver, not ISPC.
 Keep the default seconds-scale screen; do not expand to broad sweeps or profiling.
 Label hand-written hypothesis assembly separately from exact compiler-emitted code.
