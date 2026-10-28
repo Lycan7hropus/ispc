@@ -56,7 +56,8 @@ optimization loop. It compares existing Google Benchmark executables from two
 builds. It does not generate patches, build ISPC, prove builtin equivalence, or
 promote a patch automatically. Linux and Python 3.11+ are required.
 
-Start with the shuffle family on `avx2-i32x8`. Build baseline and candidate with
+The existing measurement pilot covers shuffle on `avx2-i32x8`; this is not
+evidence that shuffle is the highest-value optimization target. Build baseline and candidate with
 the same LLVM, build configuration, target list, and benchmark sources. Use the
 CMake settings above and keep both build directories. Supply a job JSON file:
 
@@ -205,6 +206,67 @@ different LLVM builds can lower the same generic shuffle to scalar stack loads
 or native vector instructions. Inspect final caller assembly on the actual
 toolchain before proposing an optimization. Keep failed attempts and restore
 the original implementation when none stays within the frozen regression budget.
+
+### Agent workflow: research before patch design
+
+The coordinator maintains the process, prompts and evaluation policy. A research
+agent performs code analysis and baseline probes; the coordinator reviews the
+evidence rather than substituting its own hotspot search. Generate its task with:
+
+```bash
+python3 scripts/builtins_lab/research.py prompt --repo /absolute/ispc \
+  --baseline FULL_40_CHARACTER_COMMIT_SHA --output /absolute/new/research
+```
+
+Dispatch the generated `agent-task.txt` to the research agent. The task requires a
+comparison of at least three builtin families and baseline caller probes for the
+two strongest hypotheses. It asks for source/history references, retained assembly,
+commands and hashes, caller relevance, concrete cost mechanisms, regression risks,
+disproof criteria, and the next bounded experiment. It prohibits compiler patches
+in this phase. Source complexity is a suspicion; final assembly verifies codegen;
+only workload measurements establish a runtime hotspot. A representative caller
+alone does not establish frequency or application impact.
+
+```bash
+python3 scripts/builtins_lab/research.py validate /absolute/research/report.json \
+  --repo /absolute/ispc
+```
+
+The validator requires three distinct families, references to the pinned source,
+and matching hashes of retained evidence. Selecting a candidate requires observed
+codegen and an identified representative caller. `selected: null` is a valid
+abstention with status `needs_more_evidence`. `ready_for_patch_design` only passes
+the structural handoff; it does not prove the claims, approve an optimization, or
+launch the patch evaluator. Review the ranked evidence and reject unsupported
+claims before assigning a patch agent. Do not demand a successful selection.
+
+After technical review accepts the selected research hypothesis, generate the
+next agent task:
+
+```bash
+python3 scripts/builtins_lab/research.py design /absolute/research/report.json \
+  --repo /absolute/ispc --output /absolute/new/design
+```
+
+This refuses an abstention and freezes the selected report in the new output.
+The agent resolves the public contract, implements and runs an independent oracle
+against the baseline, freezes representative cases, and proposes one candidate
+algorithm without implementing it. Review its `design.json`, oracle and retained
+commands before adapting the evaluator or assigning a patch experiment. Task
+generation is not technical approval; the coordinator owns that review.
+
+After review, freeze the selected hypothesis, target, representative workload,
+semantic oracle, constant/masked controls and regression budget. If the selected
+family lacks evaluator coverage, build and review that coverage before patch
+experiments; do not change an allowlist to force it into the shuffle pilot.
+Then assign one bounded patch experiment to an agent and submit it to the fixed
+evaluator below. A failed experiment returns to the hypothesis and its disproof
+criterion, rather than prompting repeated blind rewrites. An inconclusive result
+retains its status until new evidence justifies a predefined follow-up.
+
+The scripts generate tasks and validate artifacts; agent dispatch and technical
+review belong to the coordinator. The low-level `evaluate.py` remains available
+for reproducing existing experiments and does not enforce this research workflow.
 
 ### Submitting a patch to the fixed evaluator
 
