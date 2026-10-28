@@ -36,6 +36,9 @@ class PreparationTests(unittest.TestCase):
         for path in [t.home/'worker.json', t.home/'baseline.json', t.home/'baseline-ispc',
                      t.build/'CMakeCache.txt', t.build/'build.ninja']:
             path.write_text('cached')
+        metadata = dict(ispc_sha256=runner.sha256(t.home/'baseline-ispc'),
+                        cmake_cache_sha256=runner.sha256(t.build/'CMakeCache.txt'))
+        (t.home/'baseline.json').write_text(json.dumps(metadata))
         self.contents = {'oracle.ispc':b'oracle source', 'oracle.cpp':b'oracle host',
                          'contexts.ispc':b'caller source', 'contexts.cpp':b'caller host',
                          'config.h':b'config'}
@@ -62,6 +65,7 @@ class PreparationTests(unittest.TestCase):
     def prepare(self):
         self.events.append('cache-prepare')
         self.trial.originals = {self.trial.paths[0]:self.original}
+        self.trial.report['baseline'] = json.loads((self.trial.home/'baseline.json').read_text())
 
     def compile(self):
         self.events.append('candidate-compile')
@@ -130,6 +134,28 @@ class PreparationTests(unittest.TestCase):
         self.assertTrue(report['postconditions']['worker_source_restored'])
         self.assertTrue(report['postconditions']['clean'])
         self.assertTrue((self.trial.out/'focus-job.json').exists())
+
+    def test_identical_compiler_skips_candidate_fixture_and_job_after_restoration(self):
+        def compile_identical():
+            self.events.append('candidate-compile-identical')
+            (self.trial.source/self.trial.paths[0]).write_bytes(b'patch outside selected compiler input')
+            (self.trial.out/'candidate-ispc').write_bytes((self.trial.home/'baseline-ispc').read_bytes())
+        self.trial.compile_candidate.side_effect = compile_identical
+        self.trial.source_parity = mock.Mock(side_effect=AssertionError('no candidate fixture exists'))
+        report = self.run_preparation()
+        self.assertEqual(self.events,['cache-prepare','baseline-fixture','candidate-compile-identical'])
+        self.assertEqual(report['status'],'no_compiler_change_not_accepted')
+        self.assertFalse(report['accepted'])
+        self.assertEqual(report['candidate_ispc_sha256'],report['baseline']['ispc_sha256'])
+        self.trial.fixtures.assert_called_once_with('baseline',self.trial.home/'baseline-ispc')
+        self.trial.source_parity.assert_not_called()
+        self.trial.emit_job.assert_not_called()
+        self.assertFalse((self.trial.out/'candidate-contexts').exists())
+        self.assertFalse((self.trial.out/'focus-job.json').exists())
+        self.assertNotIn('focus_job',report)
+        self.assertTrue(report['postconditions']['worker_source_restored'])
+        self.assertTrue(report['postconditions']['clean'])
+        self.assertEqual((self.trial.source/self.trial.paths[0]).read_bytes(),self.original)
 
     def test_build_failure_restores_source_and_never_emits_job(self):
         def fail():

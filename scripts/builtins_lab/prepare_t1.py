@@ -176,19 +176,26 @@ class Preparation(evaluate.Evaluation):
                         self.prepare()  # Cache exists: this path cannot initialize/build a baseline.
                         self.fixtures('baseline', self.home/'baseline-ispc')
                         self.compile_candidate()
-                        self.fixtures('candidate', self.out/'candidate-ispc')
-                        self.source_parity()
-                        shutil.copy2(self.build/'CMakeCache.txt', self.out/'CMakeCache.txt')
                         self.report['candidate_ispc_sha256'] = runner.sha256(self.out/'candidate-ispc')
-                        self.report['caller_assembly_sha256'] = {
-                            s: runner.sha256(self.out/f'{s}-contexts/contexts.s') for s in ('baseline','candidate')}
+                        identical_compiler = self.report['candidate_ispc_sha256'] == self.report['baseline']['ispc_sha256']
+                        if not identical_compiler:
+                            self.fixtures('candidate', self.out/'candidate-ispc')
+                            self.source_parity()
+                        shutil.copy2(self.build/'CMakeCache.txt', self.out/'CMakeCache.txt')
+                        if not identical_compiler:
+                            self.report['caller_assembly_sha256'] = {
+                                s: runner.sha256(self.out/f'{s}-contexts/contexts.s') for s in ('baseline','candidate')}
                         self.verify_inputs()
                 finally:
                     self.restore()
                 self.verify_inputs()
-                self.source_parity()
-                self.report.update(status='prepared_for_T1_not_accepted', elapsed_seconds=time.monotonic()-self.started)
-                self.emit_job()  # Only after successful restoration, never launches timing.
+                if identical_compiler:
+                    self.report.update(status='no_compiler_change_not_accepted',
+                                       reason='Candidate compiler is byte-identical to pinned baseline; no focus job or timing.')
+                else:
+                    self.source_parity()
+                    self.report.update(status='prepared_for_T1_not_accepted', elapsed_seconds=time.monotonic()-self.started)
+                    self.emit_job()  # Only after successful restoration, never launches timing.
                 remaining(self.deadline)
         except Exception as error:
             self.report.update(status='failed', error=str(error))

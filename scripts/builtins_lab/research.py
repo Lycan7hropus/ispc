@@ -205,6 +205,13 @@ existing validated compiler cache. It incrementally builds only the candidate,
 runs packet oracles/contexts, restores source and emits a focus job without full
 T2 gates or timings. Cache miss or failed provenance requires separate preparation
 review; do not silently start a cold compiler build. Report preparation cost.
+Before building, verify actual full-target emission and inheritance: require the
+expected function definition/new path, not just isolated macro expansion or LLVM
+syntax success. AVX2 may inherit a builtin emitted in AVX1; an AVX2-only macro
+condition has no effect unless that macro is actually invoked for the selected
+module. A byte-identical compiler stops preparation with no focus job. Changed
+compiler or assembly hashes alone do not prove the proposed path was emitted;
+review actual caller instructions before timing.
 T2: only the selected integrated candidate reaches full fixed-evaluator validation,
 all frozen cases, independent confirmation and any mechanism-specific profiling.
 Do not repeat the family survey or demand a full profile for each T0 variant.

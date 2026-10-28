@@ -508,7 +508,17 @@ Each command duration and total preparation time are retained. Source restoratio
 does not rebuild the mutable candidate compiler: only the separate pinned
 `baseline-ispc` may supply baseline fixtures on a later run.
 
-The completed status is `prepared_for_T1_not_accepted`, with `accepted=false`.
+If the built compiler is byte-identical to the pinned baseline, preparation
+restores the source and ends as `no_compiler_change_not_accepted`, without a
+candidate fixture or focus job. This identity gate cannot prove that a changed
+compiler contains the intended optimization. Before paying for a compiler build,
+inspect full target emission and inherited modules: testing an isolated m4 macro
+or merely assembling an entire target is insufficient. Assert the exact expected
+function definition and new path are present in the module actually selected by
+ISPC. After preparation, review real caller code before allowing any timing.
+Assembly text hashes can differ solely because debug/source paths differ.
+
+The prepared status is `prepared_for_T1_not_accepted`, with `accepted=false`.
 Full lit, family functional tests, inherited VNNI validation, discovery and fresh
 confirmation remain T2 gates and are explicitly recorded as skipped. Preparation
 never launches timings. Review generated caller code and the hash-pinned focus
