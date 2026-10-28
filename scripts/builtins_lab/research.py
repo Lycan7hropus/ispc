@@ -129,7 +129,7 @@ or measurement policies. Use an owned output directory for probes and results.
    Select at most one candidate, and only with codegen evidence and an identified
    representative caller. Abstain if none qualifies. Do not manufacture selection
    to satisfy the task. Identify the semantic oracle and representative measurement
-   cases needed next; the current evaluator supports only the shuffle pilot.
+   cases needed next; the evaluator supports shuffle and reviewed fixture packets.
 
 Report contract:
 {{"baseline_revision":"{baseline}", "selected":null,
@@ -176,38 +176,63 @@ inlining/hoisting and result consumption. Cover relevant dimensions rather than
 an arbitrary full Cartesian product. Keep per-case effects and regression budgets;
 do not invent application-frequency weights or claim universal CPU wins.
 
+Use staged validation; do not run the complete evaluator for every idea.
+T0: first save a tiny standalone kernel comparison and minimal independent oracle.
+Use screen.py for the supported eight-lane all-on i64 fixture; another family needs
+its own reviewed small fixture. Compile only the tiny kernels/driver, not ISPC.
+Keep the default seconds-scale screen; do not expand to broad sweeps or profiling.
+Label hand-written hypothesis assembly separately from exact compiler-emitted code.
+An unclear result needs a specific new probe, not repeated runs until it passes.
+T1: only a promising T0 earns a focused real ISPC caller/mask/constant check and
+family oracle. Reuse built artifacts. Record candidate compiler preparation cost
+separately; the standalone screen does not remove that integration cost.
+T2: only the selected integrated candidate reaches full fixed-evaluator validation,
+all frozen cases, independent confirmation and any mechanism-specific profiling.
+Do not repeat the family survey or demand a full profile for each T0 variant.
+Keep stage, tested domain, time budget and next promotion criterion in design.json.
+
 The coordinator reviewed this hypothesis for experiment design, not as a proven
 runtime hotspot or speedup. Keep the evidence level and uncertainties explicit.
 Do not change tracked files, the compiler, existing tests, evaluator policy or
 allowlists. Use the existing baseline toolchain. Do not publish or commit.
 
-1. Resolve the exact public semantic contract from stdlib, builtins, tests and
-   history. Cite paths and lines. Include inactive/all-off masks, output arguments,
+1. For T0, resolve only the exact input domain and minimal semantic contract
+   being screened from the relevant source/tests. Use an existing reviewed fixture
+   when applicable. Defer the complete inactive-mask/overload/history audit to T1.
+   At T1 resolve the full public contract from stdlib, builtins, tests and history. Cite paths and lines. Include inactive/all-off masks, output arguments,
    constant callers, and representation-specific edge cases. List any unresolved
    behavior. Restrict the initial experiment to the selected types and target.
-2. Implement an independent scalar oracle and minimal caller harness in this
-   output directory. Exercise every mask for the selected gang width, equal and
+2. At T0 use the existing tiny independent oracle, or implement a reviewed small
+   oracle for the explicitly limited domain; do not build the exhaustive suite yet.
+   At T1 implement the family oracle and real caller harness in this output
+   directory. Exercise every mask for the selected gang width, equal and
    differing values, early/late and high/low-half differences, extremes, randomized
    patterns, and all relevant public overloads. The oracle must not copy the builtin
    algorithm or derive expectations from the compiler under test. Do not assert
    values for contractually unspecified results. Run it against the baseline and
    retain the exact source, commands, executable/toolchain hashes and results.
-3. Freeze representative measurement case names before any candidate exists.
+3. Freeze minimal T0 input cases before screening, without a broad corpus sweep.
+   At T1 freeze representative acceptance case names before a production patch
+   exists; do not select favorable cases based on T0 timings.
    Include working-set/distribution controls, runtime/fixed masks and constants.
    Explain which cases measure a useful operation and which are only regression
    controls. Use the existing benchmark's workload assumptions where justified.
    Do not infer speedup from instruction count. Do not run broad timing sweeps.
-4. Design at most one concrete candidate algorithm. Specify the smallest source
+4. Design at most one concrete candidate algorithm. At T0 an owned standalone
+   kernel implementation is allowed; do not patch or rebuild ISPC. Retain its
+   source, screen report and scope limitations before moving to T1. Specify the smallest source
    change and inheritance scope, anticipated instruction/dependency change,
    semantic proof obligations, disproof criterion, and regression risks.
-   Do not implement the candidate yet. If the oracle, contract or relevance fails,
+   Do not implement a production builtin patch yet. If the oracle, contract or relevance fails,
    abstain and state the next evidence needed rather than forcing a patch.
-   A patch experiment also needs reviewed runtime evidence for its intended workload.
+   Full acceptance needs reviewed runtime evidence for its intended workload;
+   an isolated T0 screen is a cheap filter, not final integration evidence.
    List missing corpus evidence explicitly. Microbenchmarks are valid intended
    workloads here; scope conclusions to their cases and CPU. An application
    profile is optional and its absence must not block library-level investigation.
-5. Produce design.json containing baseline_revision, selected, status
-   (ready_for_evaluator_review or needs_more_evidence), contract, scope,
+5. Produce design.json containing baseline_revision, selected, stage (T0/T1/T2),
+   next_gate, elapsed_seconds, status (ready_for_focused_check for a promising T0,
+   ready_for_evaluator_review only after T1, or needs_more_evidence), contract, scope,
    oracle_commands, oracle_results, artifacts (paths and SHA256), measurement_cases,
    candidate_design, risks, disproof and unresolved. Use actual replayable commands;
    retain collector scripts for combined artifacts. Add a short reviewer explanation.

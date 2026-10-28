@@ -268,6 +268,66 @@ The scripts generate tasks and validate artifacts; agent dispatch and technical
 review belong to the coordinator. The low-level `evaluate.py` remains available
 for reproducing existing experiments and does not enforce this research workflow.
 
+### Tiered validation: cheap ideas first
+
+Do not rebuild ISPC or run the complete evaluator for every low-level variant.
+Use these levels; only a promising idea earns the cost of the next level.
+
+| Level | Purpose | Work |
+|---|---|---|
+| T0: kernel screen | Quickly reject weak standalone hypotheses | Tiny driver + two kernels, small independent oracle, short paired batches; no ISPC rebuild, full suites or profiler |
+| T1: focused caller check | Check whether the gain survives real ISPC codegen and masks/constants | Family oracle and a small representative caller subset; reuse binaries; prepare one candidate compiler only after T0 |
+| T2: acceptance | Decide whether a production patch qualifies | Complete fixed evaluator, frozen corpus/budgets, full lit/family checks and independent confirmation |
+
+T0 is implemented by `screen.py` plus `screen_kernel.cpp`; it needs only clang++,
+not Google Benchmark, CMake or a candidate compiler. The initial reviewed fixture
+is all-on `reduce_equal` for eight integer64 lanes on AVX2 Linux. Other builtin
+families require their own fixture; do not relabel these semantics as generic.
+For example, this command builds two standalone assembly hypotheses and measures
+them (on the development host, about two seconds including compilation):
+
+```bash
+python3 scripts/builtins_lab/screen.py \
+  --baseline scripts/builtins_lab/screen_examples/reduce_equal_scalar.S \
+  --candidate scripts/builtins_lab/screen_examples/reduce_equal_avx2.S \
+  --cxx /absolute/llvm/bin/clang++ --cpu 2 --output /absolute/new/screen
+```
+
+Trusted `.S`, `.s`, `.cpp` sources or prebuilt `.so` files export this Linux SysV
+adapter ABI (not ISPC's public ABI):
+
+```cpp
+extern "C" void lab_kernel(const uint64_t *input, uint64_t *values,
+                         uint64_t *flags, size_t groups, size_t repeats);
+```
+
+Each group contains eight input words. Every repetition computes equality and
+writes a 0/1 flag; `values[g]` is meaningful only on true. Zero groups/repetitions
+perform no writes. Kernels must execute the repeated work; avoid compiler hoisting
+in C++ adapters. The included assembly kernels do so explicitly. They are synthetic
+hypotheses, not exact extracted production ISPC loops.
+
+The fixed oracle checks all lanes and all 64 differing bits independently of the
+timed working set, equality/extreme values, zero work, input integrity and output
+canaries. It does not establish mixed-mask or public-overload correctness. A bad
+kernel stops before timing results. Timing uses calibrated batches, a pinned CPU,
+alternating A/B order, retained output consumption, and five paired samples for
+equal/early/late inputs. The default screen takes a fraction of a second after
+building; `report.json` separates build, measurement and end-to-end elapsed time.
+TSC reference ticks and wall nanoseconds are retained; TSC ticks are not core cycles.
+
+Only consistently greater-than-5% differences get a direction label; all other
+results are `unclear`. This rough filter is not a significance test or the T2
+regression policy. Its status is always `screened_not_accepted`. Source/binary
+hashes, commands and raw pairs remain reviewable. The common per-user host lock prevents
+overlap with other lab timings. Passing T0 does not prove the compiler emits this
+code or that the gain survives inlining, masks, constants or a different workload.
+
+During agent tasks, save artifacts first, stop after one bounded variant, and send
+only the selected idea to T1/T2. Use profiling for a specific unresolved mechanism;
+do not make a broad profile a prerequisite for every cheap kernel screen. Candidate
+compiler build cost still exists at T1 and must be reported separately from timing.
+
 ### Executing agent tasks through agy
 
 Prefer the configured agy CLI for research/design execution in this lab.
