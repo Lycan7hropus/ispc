@@ -299,6 +299,23 @@ task's actual result and evidence, then apply the existing research/design and
 fixed-evaluator gates. Neither an agy response nor process success accepts a
 patch, publishes code or weakens the frozen experiment policy.
 
+Use separate bounded research, fixture-design and patch-delivery tasks. Every task
+must name absolute shared output paths, write its initial status first, and save
+reviewable artifacts before optional explanation. An agent terminal's temporary
+directory may disappear between turns or be invisible to the coordinator. Never
+accept a prototype that exists only in a log or private temporary directory.
+On partial output, inspect the existing conversation and artifacts before steering
+that conversation; preserve every rejected patch rather than overwriting evidence.
+
+Before building a shared m4 candidate, review every selected and nonselected
+ISA/type/width expansion. Require complete fallback branches, valid predecessor
+lists and no duplicate definitions. Preprocess and assemble the selected target,
+its inherited child, neighboring widths and an unrelated ISA; compare nonselected
+function bodies to baseline. `git apply --check` establishes patch applicability
+only. An agent's `patch_ready` declaration does not establish valid IR or scope.
+Repair concrete delivery/syntax/scope failures before any timing; algorithmic
+rewrites still require returning to the hypothesis and its disproof criterion.
+
 ### Runtime evidence and profiler inputs
 
 The objective is a reusable framework for builtin families. A particular
@@ -357,10 +374,42 @@ guidance](https://www.intel.com/content/www/us/en/docs/vtune-profiler/user-guide
 Profiler capability must be checked on the actual host/VM; installing a tool alone
 does not establish PMU event availability.
 
+### Reviewed fixture packets for another builtin family
+
+The maintainer can freeze a reviewed oracle/corpus as a packet before candidate
+generation. Add `packet` (absolute `packet.json` path) and `packet_sha256` to the
+maintainer policy, then use the same `evaluate.py` command. Worker submissions
+still contain only `hypothesis` and `patch`; they cannot select or replace a packet.
+Omitting these policy fields retains the shuffle pilot.
+
+The initial packet schema supports integer64 policies on `avx2-i32x8`. Its JSON
+has `schema: 1`, `name`, `target`, exact `allowed_paths` under `builtins/`, a
+`sources` map of SHA256 hashes for `oracle.ispc`, `oracle.cpp`, `contexts.ispc`,
+`contexts.cpp`, `config.h`, exact `cases`, `discovery_cases` (a subset), local
+`functional_globs`, and generated `oracle_header`/`benchmark_header` basenames.
+Review source scope and semantics before pinning this manifest. These are trusted
+maintainer inputs, not a sandbox for hostile C++ or IR.
+
+The evaluator copies the verified source bytes into each run, freezes all hashes,
+compiles both sides with the same fixed flags/library, runs the oracle and rejects
+inventory drift before timing. It retains full lit tests and the packet's existing
+functional tests, and compiles the VNNI child with runtime explicitly unverified.
+Compiler caches remain keyed by compiler inputs; fresh packet fixtures/checks are
+never reused from another evaluation. Original worker sources are restored after
+the experiment, including failure paths.
+
+Discovery and confirmation can use the same frozen corpus with independent fresh
+timing processes. Do not claim unseen-data validation unless the manifest actually
+contains reserved cases. The integer64 reduce_equal pilot uses 22 cases: signed
+and unsigned, full/fixed/runtime masks, equal/early/late differences, constants,
+and L1/small working-set versus 256 KiB input cases. The latter is not a DRAM
+streaming claim. Accumulation versus store is a context comparison, not a clean
+causal decomposition of store cost; accumulation adds its own dependency.
+
 ### Submitting a patch to the fixed evaluator
 
-`evaluate.py` runs the complete shuffle pilot without manual build or measurement
-steps. A maintainer provides a policy JSON; a worker provides only a hypothesis
+`evaluate.py` runs the shuffle pilot or a reviewed fixture packet without manual
+build or measurement steps. A maintainer provides a policy JSON; a worker provides only a hypothesis
 and an absolute patch path. For example, copy and adjust this policy:
 
 ```json

@@ -21,11 +21,13 @@ import subprocess
 import sys
 
 import run as runner
+import fixture_packet
 
 ALLOWED = ('builtins/target-avx2-i32x8.ll',)
-TOOLS = ('run.py', 'validate_shuffle.py', 'build_shuffle_bench.py', 'evaluate.py')
+TOOLS = ('run.py', 'validate_shuffle.py', 'build_shuffle_bench.py', 'evaluate.py', 'fixture_packet.py')
 POLICY_KEYS = {'repo', 'baseline_revision', 'llvm', 'cache', 'type', 'cpu',
-               'runs', 'repetitions', 'min_gain', 'max_regression', 'jobs', 'timeout'}
+               'runs', 'repetitions', 'min_gain', 'max_regression', 'jobs', 'timeout',
+               'packet', 'packet_sha256'}
 
 
 def fingerprint(value):
@@ -53,6 +55,15 @@ def validate_policy(policy):
     for key in ('repo', 'llvm', 'cache'):
         if not isinstance(policy.get(key), str) or not Path(policy[key]).is_absolute():
             raise ValueError(f'{key} must be an absolute path')
+    if ('packet' in policy) != ('packet_sha256' in policy):
+        raise ValueError('packet and packet_sha256 must be supplied together')
+    if 'packet' in policy:
+        if not isinstance(policy['packet'], str) or not Path(policy['packet']).is_absolute():
+            raise ValueError('packet must be an absolute manifest path')
+        if not isinstance(policy['packet_sha256'], str) or not re.fullmatch('[0-9a-f]{64}', policy['packet_sha256']):
+            raise ValueError('packet_sha256 must pin the manifest')
+        if policy.get('type') != 'int64':
+            raise ValueError('initial fixture packet policy requires integer64')
     if not re.fullmatch('[0-9a-f]{40}', policy.get('baseline_revision', '')):
         raise ValueError('baseline_revision must be a full commit SHA')
     if policy.get('type') not in ('int16', 'int64', 'double'):
@@ -77,7 +88,7 @@ def validate_request(request):
         raise ValueError('patch must be an absolute path')
 
 
-def changed_paths(repo, patch):
+def changed_paths(repo, patch, allowed=ALLOWED):
     summary = subprocess.run(['git', '-C', str(repo), 'apply', '--summary', str(patch)],
                              capture_output=True, check=True)
     if summary.stdout.strip():
@@ -91,7 +102,7 @@ def changed_paths(repo, patch):
         parts = record.decode('utf-8').split('\t')
         if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit():
             raise ValueError('binary or renamed patch entries are not supported')
-        if parts[2] not in ALLOWED or parts[2] in paths:
+        if parts[2] not in allowed or parts[2] in paths:
             raise ValueError(f'patch changes a protected or duplicate path: {parts[2]}')
         paths.append(parts[2])
     if not paths:
@@ -144,17 +155,24 @@ class Evaluation:
             raise ValueError('invalid worker name')
         self.policy, self.request = policy, request
         self.repo, self.llvm = Path(policy['repo']), Path(policy['llvm'])
+        self.packet = (fixture_packet.load(policy['packet'], policy['packet_sha256'])
+                       if 'packet' in policy else None)
         self.patch = self.out / 'candidate.patch'
         shutil.copyfile(request['patch'], self.patch)
-        self.paths = changed_paths(self.repo, self.patch)
+        allowed = self.packet['manifest']['allowed_paths'] if self.packet else ALLOWED
+        self.paths = changed_paths(self.repo, self.patch, allowed)
         self.tools = self.out / 'evaluator'
         self.tools.mkdir()
         for name in TOOLS:
             shutil.copyfile(Path(__file__).parent / name, self.tools / name)
+        frozen_names = list(TOOLS)
+        if self.packet:
+            fixture_packet.freeze(self.packet, self.tools / 'packet')
+            frozen_names += ['packet/packet.json', *['packet/' + name for name in self.packet['content']]]
         toolchain = {name: runner.sha256(self.llvm / name)
                      for name in ('llvm-config', 'clang', 'clang++', 'llvm-as')}
         libraries = shared_libraries(self.llvm / name for name in toolchain)
-        evaluator_hashes = {name: runner.sha256(self.tools / name) for name in TOOLS}
+        evaluator_hashes = {name: runner.sha256(self.tools / name) for name in frozen_names}
         self.configure_flags = ['-DCMAKE_BUILD_TYPE=Release',
             f'-DCMAKE_C_COMPILER={self.llvm / "clang"}', f'-DCMAKE_CXX_COMPILER={self.llvm / "clang++"}',
             f'-DLLVM_CONFIG_EXECUTABLE={self.llvm / "llvm-config"}', '-DARM_ENABLED=OFF',
@@ -185,6 +203,8 @@ class Evaluation:
                            evaluator_sha256=evaluator_hashes,
                            worker=str(self.home), commands=[], steps=[])
         self.originals = {}
+        if self.packet:
+            self.report['fixture_packet'] = dict(sha256=self.packet['sha256'], manifest=self.packet['manifest'])
         for name, value in (('policy.json', policy), ('request.json', request)):
             (self.out / name).write_text(json.dumps(value, indent=2) + '\n')
 
@@ -257,22 +277,46 @@ class Evaluation:
         self.report['baseline_cache_hit'] = False
         self.report['baseline'] = metadata
 
+    def cases(self, confirmation=False):
+        if getattr(self, 'packet', None):
+            return sorted(self.packet['manifest']['cases' if confirmation else 'discovery_cases'])
+        return expected_cases(confirmation)
+
+    def benchmark_binary(self, label):
+        name = 'builtin-contexts' if getattr(self, 'packet', None) else 'shuffle-contexts'
+        return self.out / f'{label}-contexts' / name
+
+    def oracle_binary(self, label):
+        name = 'validate-builtin' if getattr(self, 'packet', None) else 'validate-shuffle'
+        return self.out / f'{label}-validation' / name
+
+    def packet_command(self, compiler, validation, contexts, target='avx2-i32x8', compile_only=False):
+        command = ['python3', self.tools / 'fixture_packet.py', '--packet', self.tools / 'packet/packet.json',
+                   '--ispc', compiler, '--cxx', self.llvm / 'clang++', '--build', self.build,
+                   '--source-root', self.source, '--validation', validation, '--contexts', contexts,
+                   '--target', target, '--timeout', str(self.policy['timeout'])]
+        return command + (['--compile-only'] if compile_only else [])
+
     def fixtures(self, label, compiler):
-        self.stage(f'{label}-oracle', ['python3', self.tools / 'validate_shuffle.py',
-            '--ispc', compiler, '--cxx', self.llvm / 'clang++',
-            '--output', self.out / f'{label}-validation'])
-        self.stage(f'{label}-contexts', ['python3', self.tools / 'build_shuffle_bench.py',
-            '--ispc', compiler, '--cxx', self.llvm / 'clang++', '--build', self.build,
-            '--source-root', self.source, '--type', self.policy['type'],
-            '--output', self.out / f'{label}-contexts'])
+        if self.packet:
+            self.stage(f'{label}-fixture', self.packet_command(compiler,
+                self.out / f'{label}-validation', self.out / f'{label}-contexts'))
+        else:
+            self.stage(f'{label}-oracle', ['python3', self.tools / 'validate_shuffle.py',
+                '--ispc', compiler, '--cxx', self.llvm / 'clang++',
+                '--output', self.out / f'{label}-validation'])
+            self.stage(f'{label}-contexts', ['python3', self.tools / 'build_shuffle_bench.py',
+                '--ispc', compiler, '--cxx', self.llvm / 'clang++', '--build', self.build,
+                '--source-root', self.source, '--type', self.policy['type'],
+                '--output', self.out / f'{label}-contexts'])
         rows = (self.out / f'{label}-contexts/preflight.log').read_text().splitlines()
-        if sorted(rows) != expected_cases(True):
+        if sorted(rows) != self.cases(True):
             raise ValueError(f'{label}: benchmark inventory differs from fixed evaluator')
         for confirmation in (False, True):
             phase = 'confirmation' if confirmation else 'discovery'
-            cases = expected_cases(confirmation)
+            cases = self.cases(confirmation)
             inventory_label = f'{label}-{phase}-inventory'
-            self.stage(inventory_label, [self.out / f'{label}-contexts/shuffle-contexts',
+            self.stage(inventory_label, [self.benchmark_binary(label),
                 '--benchmark_list_tests=true', '--benchmark_filter=' + case_filter(cases)])
             if sorted((self.out / f'{inventory_label}.log').read_text().splitlines()) != cases:
                 raise ValueError(f'{label}: {phase} filter changes fixed inventory')
@@ -289,18 +333,24 @@ class Evaluation:
                                       '-j', str(self.policy['jobs'])])
         shutil.copy2(self.build / 'bin/ispc', self.out / 'candidate-ispc')
         self.fixtures('candidate', self.out / 'candidate-ispc')
-        self.stage('candidate-vnni-compile', ['python3', self.tools / 'validate_shuffle.py',
-            '--ispc', self.out / 'candidate-ispc', '--cxx', self.llvm / 'clang++',
-            '--target', 'avx2vnni-i32x8', '--compile-only',
-            '--output', self.out / 'candidate-vnni-unverified'])
+        if self.packet:
+            self.stage('candidate-vnni-compile', self.packet_command(self.out / 'candidate-ispc',
+                self.out / 'candidate-vnni-unverified', self.out / 'candidate-vnni-contexts',
+                'avx2vnni-i32x8', True))
+        else:
+            self.stage('candidate-vnni-compile', ['python3', self.tools / 'validate_shuffle.py',
+                '--ispc', self.out / 'candidate-ispc', '--cxx', self.llvm / 'clang++',
+                '--target', 'avx2vnni-i32x8', '--compile-only',
+                '--output', self.out / 'candidate-vnni-unverified'])
         for name in ('contexts.ispc', 'contexts.cpp'):
             if runner.sha256(self.out / 'baseline-contexts' / name) != runner.sha256(self.out / 'candidate-contexts' / name):
                 raise ValueError('baseline and candidate harness sources differ')
         self.stage('candidate-lit', ['cmake', '--build', self.build, '--target', 'check-all',
                                     '-j', str(self.policy['jobs'])])
-        tests = sorted(self.source.glob('tests/func-tests/shuffle*.ispc'))
+        patterns = self.packet['manifest']['functional_globs'] if self.packet else ['shuffle*.ispc']
+        tests = sorted({path for pattern in patterns for path in self.source.glob('tests/func-tests/' + pattern)})
         if not tests:
-            raise ValueError('no functional shuffle tests')
+            raise ValueError('no functional tests for the selected builtin family')
         self.report['functional_test_sha256'] = {str(p.relative_to(self.source)): runner.sha256(p) for p in tests}
         self.stage('candidate-functional', ['python3', self.source / 'scripts/run_tests.py',
             '--target=avx2-i32x8', '--compiler=clang++',
@@ -312,14 +362,14 @@ class Evaluation:
         label = 'confirmation' if confirmation else 'discovery'
         print(label, flush=True)
         job = {key: self.policy[key] for key in ('cpu', 'runs', 'repetitions', 'min_gain', 'max_regression')}
-        cases = expected_cases(confirmation)
+        cases = self.cases(confirmation)
         job.update(hypothesis=self.request['hypothesis'], baseline_revision=self.policy['baseline_revision'],
                    candidate_revision=self.policy['baseline_revision'] + '+patch-' + self.report['patch_sha256'],
-                   baseline=str(self.out / 'baseline-contexts/shuffle-contexts'),
-                   candidate=str(self.out / 'candidate-contexts/shuffle-contexts'), metric='cpu_time',
+                   baseline=str(self.benchmark_binary('baseline')),
+                   candidate=str(self.benchmark_binary('candidate')), metric='cpu_time',
                    timeout=self.policy['timeout'], expected_cases=cases,
                    filter=case_filter(cases),
-                   checks=[[str(self.out / f'{name}-validation/validate-shuffle')] for name in ('baseline', 'candidate')])
+                   checks=[[str(self.oracle_binary(name))] for name in ('baseline', 'candidate')])
         (self.out / f'{label}-job.json').write_text(json.dumps(job, indent=2) + '\n')
         directory = self.out / label
         directory.mkdir()
