@@ -478,6 +478,43 @@ costs time outside this run. Record that cost separately. T2 and fresh confirmat
 remain necessary for a production decision; this runner never rewrites old T2
 results or automatically promotes a candidate.
 
+### Preparing a candidate for T1 without full T2
+
+`prepare_t1.py` accepts the same trusted policy, two-field worker request and
+worker name as `evaluate.py`, but requires a reviewed fixture packet and an
+existing valid baseline compiler cache. A cache miss stops; this command never
+initializes a worktree, configures a cold build or builds a baseline compiler.
+Prepare that cache separately through the full evaluator first.
+
+```bash
+python3 scripts/builtins_lab/prepare_t1.py /absolute/request.json \
+  --policy /absolute/reviewed-policy.json --worker existing-worker \
+  --output /absolute/new/preparation
+```
+
+Under the existing worker lock and shared host lock it checks the pinned cache,
+compiles both sides' frozen oracle/callers with the retained baseline and one
+incrementally built candidate compiler, runs both oracles and verifies exact
+inventory and source parity. It restores original source bytes and checks a clean
+pinned checkout before emitting `focus-job.json`. Changed input identities or
+failed restoration invalidate preparation and prevent a ready job. Candidate
+binaries, patch, assembly, IR and logs remain available after restoration.
+
+The checked preparation deadline is 900 seconds including initialization/queues,
+with at most 30 seconds per lock acquisition and 300 seconds per subprocess,
+clamped to the remaining budget. Local filesystem stalls/cleanup can delay return;
+expired preparation cannot report readiness. Cleanup still runs after timeout.
+Each command duration and total preparation time are retained. Source restoration
+does not rebuild the mutable candidate compiler: only the separate pinned
+`baseline-ispc` may supply baseline fixtures on a later run.
+
+The completed status is `prepared_for_T1_not_accepted`, with `accepted=false`.
+Full lit, family functional tests, inherited VNNI validation, discovery and fresh
+confirmation remain T2 gates and are explicitly recorded as skipped. Preparation
+never launches timings. Review generated caller code and the hash-pinned focus
+job, then invoke `focus.py` separately; it obtains exclusive host access itself.
+The original full evaluator retains its existing validation order and decisions.
+
 ### Executing agent tasks through agy
 
 Prefer the configured agy CLI for research/design execution in this lab.

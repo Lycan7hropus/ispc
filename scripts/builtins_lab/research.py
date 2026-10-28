@@ -199,7 +199,12 @@ panel, retaining both independent oracles, fixture/assembly provenance and exact
 cases. Its three paired runs are descriptive T1 evidence, never acceptance or a
 2% regression guarantee. Do not change cases or repeat a failed trial to obtain a
 favorable result; retain failures and the preparation cost. It needs existing
-binaries but does not require completing T2 first.
+binaries but does not require completing T2 first. When real candidate binaries
+are missing, the coordinator can use prepare_t1.py with a reviewed packet and
+existing validated compiler cache. It incrementally builds only the candidate,
+runs packet oracles/contexts, restores source and emits a focus job without full
+T2 gates or timings. Cache miss or failed provenance requires separate preparation
+review; do not silently start a cold compiler build. Report preparation cost.
 T2: only the selected integrated candidate reaches full fixed-evaluator validation,
 all frozen cases, independent confirmation and any mechanism-specific profiling.
 Do not repeat the family survey or demand a full profile for each T0 variant.

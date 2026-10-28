@@ -321,7 +321,7 @@ class Evaluation:
             if sorted((self.out / f'{inventory_label}.log').read_text().splitlines()) != cases:
                 raise ValueError(f'{label}: {phase} filter changes fixed inventory')
 
-    def build_candidate(self):
+    def compile_candidate(self):
         if runner.sha256(self.patch) != self.report['patch_sha256']:
             raise ValueError('submitted patch changed after validation')
         self.stage('patch-apply', ['git', '-C', self.source, 'apply', self.patch])
@@ -332,6 +332,9 @@ class Evaluation:
         self.stage('candidate-build', ['cmake', '--build', self.build, '--target', 'ispc',
                                       '-j', str(self.policy['jobs'])])
         shutil.copy2(self.build / 'bin/ispc', self.out / 'candidate-ispc')
+
+    def build_candidate(self):
+        self.compile_candidate()
         self.fixtures('candidate', self.out / 'candidate-ispc')
         if self.packet:
             self.stage('candidate-vnni-compile', self.packet_command(self.out / 'candidate-ispc',
