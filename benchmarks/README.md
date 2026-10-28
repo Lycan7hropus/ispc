@@ -398,6 +398,29 @@ Compiler caches remain keyed by compiler inputs; fresh packet fixtures/checks ar
 never reused from another evaluation. Original worker sources are restored after
 the experiment, including failure paths.
 
+Establish baseline repeatability against the intended regression budget before
+spending a broad optimization sweep on timing. If identity controls cannot resolve
+that budget, keep performance promotion unresolved while designing a revised
+measurement study. Freeze any revised policy before its experiments; never loosen
+the active experiment's budget in response to a candidate's results.
+
+If discovery is inconclusive, preserve that result and the complete corpus. A
+reviewed diagnostic follow-up may run one baseline-versus-itself arm and one fresh
+whole-corpus baseline/candidate arm using the frozen binaries, cases, flags and
+budgets. Record the exact arm count and stop rule before timing; never rerun until
+a candidate passes. Diagnostic arms do not automatically supersede the original
+acceptance result. Retain all failed or inconclusive evidence.
+
+The same-binary control estimates repeat variability, not the effect of differing
+binary layouts. Observed ranges from a few processes are not confidence intervals;
+overlapping ranges do not prove that a candidate difference is noise. Identical
+function instructions do not prove identical placement or whole-program behavior.
+Code-size changes and branch counts suggest mechanisms, not causal attribution.
+Measure object/symbol sizes when discussing code size: assembly-text file length
+also contains labels, debug directives and formatting. Constant-folding checks and
+assembly comparisons supplement the frozen timing controls; they do not remove
+inconclusive controls from the acceptance inventory.
+
 Discovery and confirmation can use the same frozen corpus with independent fresh
 timing processes. Do not claim unseen-data validation unless the manifest actually
 contains reserved cases. The integer64 reduce_equal pilot uses 22 cases: signed
