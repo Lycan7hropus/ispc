@@ -268,6 +268,37 @@ The scripts generate tasks and validate artifacts; agent dispatch and technical
 review belong to the coordinator. The low-level `evaluate.py` remains available
 for reproducing existing experiments and does not enforce this research workflow.
 
+### Executing agent tasks through agy
+
+Prefer the configured agy CLI for research/design execution in this lab.
+The coordinator maintains the process and reviews evidence. Send a retained task
+through this adapter instead of starting another coordinator subagent session:
+
+```bash
+python3 scripts/builtins_lab/dispatch_agy.py /absolute/agent-task.txt \
+  --repo /absolute/ispc --output /absolute/new/dispatch --timeout 360
+```
+
+The adapter uses the existing agy configuration and default model. It does not
+manage credentials or infer backend token accounting. It enables the CLI sandbox,
+uses an owned working directory, and does not enable permission-bypass flags.
+The task must explicitly name its allowed output paths and prohibited repository
+edits. Generated task output paths remain authoritative; dispatch logs live in
+the separate new dispatch directory.
+
+`dispatch.json`, `task.txt` and `agy.log` retain the executable/task hashes,
+arguments, timeout/failure and before/after Git HEAD, status and tracked-diff
+identity. These are cooperative audit checks, not a complete filesystem sandbox.
+The log uses stream JSON for backend progress and any reported session/usage
+metadata. Pass `--expect result.json` (repeatable) for task-specific output files.
+An agy print timeout can return exit code zero while the turn is incomplete;
+the adapter labels it `partial`. CLI timeout does not prove remote cancellation,
+so do not automatically resubmit a partial task or accept an initial draft.
+`process_exited_for_review` only records a successful process exit. Review the
+task's actual result and evidence, then apply the existing research/design and
+fixed-evaluator gates. Neither an agy response nor process success accepts a
+patch, publishes code or weakens the frozen experiment policy.
+
 ### Runtime evidence and profiler inputs
 
 The objective is a reusable framework for builtin families. A particular
