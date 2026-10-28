@@ -22,6 +22,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import time
 
 
 UNITS = {"ns": 1e-9, "us": 1e-6, "ms": 1e-3, "s": 1.0}
@@ -182,10 +183,22 @@ def command(argv, output, timeout, cpu):
 
 
 @contextmanager
-def host_access(exclusive):
+def host_access(exclusive, *, deadline=None):
     path = Path(tempfile.gettempdir()) / f"ispc-builtins-host-{os.getuid()}.lock"
     with path.open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        if deadline is None:
+            fcntl.flock(lock, operation)
+        else:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("host lock deadline reached")
+                try:
+                    fcntl.flock(lock, operation | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    time.sleep(min(0.05, remaining))
         yield
 
 

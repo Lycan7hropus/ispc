@@ -189,6 +189,12 @@ An unclear result needs a specific new probe, not repeated runs until it passes.
 T1: only a promising T0 earns a focused real ISPC caller/mask/constant check and
 family oracle. Reuse built artifacts. Record candidate compiler preparation cost
 separately; the standalone screen does not remove that integration cost.
+Use focus.py with a coordinator-reviewed hash-pinned job for a short real-caller
+panel, retaining both independent oracles, fixture/assembly provenance and exact
+cases. Its three paired runs are descriptive T1 evidence, never acceptance or a
+2% regression guarantee. Do not change cases or repeat a failed trial to obtain a
+favorable result; retain failures and the preparation cost. It needs existing
+binaries but does not require completing T2 first.
 T2: only the selected integrated candidate reaches full fixed-evaluator validation,
 all frozen cases, independent confirmation and any mechanism-specific profiling.
 Do not repeat the family survey or demand a full profile for each T0 variant.

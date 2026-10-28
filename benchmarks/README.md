@@ -359,6 +359,64 @@ only the selected idea to T1/T2. Use profiling for a specific unresolved mechani
 do not make a broad profile a prerequisite for every cheap kernel screen. Candidate
 compiler build cost still exists at T1 and must be reported separately from timing.
 
+### Short real-caller T1 probes
+
+`focus.py` runs a frozen small caller panel using existing benchmark and oracle
+binaries. It does not build ISPC or require a completed T2 evaluation. The
+coordinator prepares a trusted job after reviewing the family oracle, actual
+generated assembly and panel coverage. A worker must not choose its own checks
+or remove cases after seeing a result. The schema is deliberately separate from
+the full evaluator's acceptance policy:
+
+```json
+{
+  "schema": 1,
+  "hypothesis": "A reviewed code generation change survives these caller contexts",
+  "baseline": {"path": "/absolute/baseline-contexts", "sha256": "64_lowercase_hex_digits"},
+  "candidate": {"path": "/absolute/candidate-contexts", "sha256": "64_lowercase_hex_digits"},
+  "checks": [{"path": "/absolute/independent-oracle", "sha256": "64_lowercase_hex_digits"}],
+  "cases": ["exact/registered/case/name"],
+  "provenance": [{"path": "/absolute/reviewed-fixture-manifest.json", "sha256": "64_lowercase_hex_digits"}]
+}
+```
+
+Every field is required; executable checks take no arguments. Pin both builds'
+oracles, fixture sources, submitted patch and generated assembly in provenance.
+Additional files such as runtime libraries can also be pinned. Hashes establish
+artifact identity, not oracle adequacy or semantic equivalence. The coordinator
+remains responsible for that review. Identical baseline/candidate binaries are
+allowed for identity controls.
+
+```bash
+python3 scripts/builtins_lab/focus.py /absolute/job.json \
+  --job-sha256 SHA256_OF_JOB --output /absolute/new/t1 --cpu 2
+```
+
+The runner freezes the job, protocol and current tools, acquires the same exclusive
+host lock as other lab timings, verifies inputs, runs every oracle, then verifies
+both exact filtered inventories before timing. Three pairs use AB, BA, AB order;
+each process uses one repetition and 0.01 seconds minimum time per case. Missing,
+duplicate, failed or nonpositive/nonfinite measurement rows invalidate the trial.
+Time units are normalized before ratios. All identities are checked again after
+measurement. Outputs retain raw JSON, logs, commands, paired ratios and descriptive
+observed ranges; these ranges are not confidence intervals.
+
+Lock acquisition is limited to 30 seconds. Active work has a 60-second deadline,
+with 30 seconds for preflight, 15 seconds for measurement, and at most 10 seconds
+per subprocess. Local hash loops and stage boundaries check remaining time;
+filesystem stalls and cleanup can delay the return, but an expired deadline cannot
+produce a successful result. Initial input setup has no hard deadline and is
+reported separately. A panel too large for the fixed budget fails without retry.
+Output directories must be new, and failures preserve partial evidence.
+
+The only completed status is `focused_panel_complete_not_accepted`, always with
+`accepted=false`. Three short pairs cannot establish a 2% regression bound. A panel
+informed by earlier measurements is not independent confirmation. Build time is
+zero because binaries are reused; preparing a candidate compiler/caller still
+costs time outside this run. Record that cost separately. T2 and fresh confirmation
+remain necessary for a production decision; this runner never rewrites old T2
+results or automatically promotes a candidate.
+
 ### Executing agent tasks through agy
 
 Prefer the configured agy CLI for research/design execution in this lab.
