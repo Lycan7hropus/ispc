@@ -182,7 +182,12 @@ Use screen.py --body-mode for the supported eight-lane all-on i64 primitive;
 keep loop/output framing identical and use an identity control first. Whole-kernel
 scheduling studies must be labeled separately. Verify actual LLVM/ISPC lowering
 before claiming a hand-written body corresponds to production code. Another family needs
-its own reviewed small fixture. Compile only the tiny kernels/driver, not ISPC.
+its own reviewed small fixture. Proper partial eight-lane i64 masks can use
+screen.py --fixture mixed-mask --body-mode: frame owns first-active selection,
+broadcast, loop and output; bodies receive existing sign-mask vectors. This tests
+fully accessible disjoint buffers, never empty/full masks or runtime LLVM poison.
+Clearly label modeled LLVM graphs versus exact production body extraction.
+Compile only the tiny kernels/driver, not ISPC.
 Keep the default seconds-scale screen; do not expand to broad sweeps or profiling.
 Label hand-written hypothesis assembly separately from exact compiler-emitted code.
 An unclear result needs a specific new probe, not repeated runs until it passes.
@@ -199,6 +204,11 @@ T2: only the selected integrated candidate reaches full fixed-evaluator validati
 all frozen cases, independent confirmation and any mechanism-specific profiling.
 Do not repeat the family survey or demand a full profile for each T0 variant.
 Keep stage, tested domain, time budget and next promotion criterion in design.json.
+Leave inconclusive T2 results unchanged. Paired order/drift/correlation diagnostics
+are descriptive, not acceptance or iid proof. The paired-median proposal is not an
+installed rule; do not demand twelve calibration sessions as a prerequisite or fit
+thresholds to a candidate. A new diagnostic needs a reviewed frozen bounded plan;
+never replace pairs or rerun until favorable.
 
 The coordinator reviewed this hypothesis for experiment design, not as a proven
 runtime hotspot or speedup. Keep the evidence level and uncertainties explicit.

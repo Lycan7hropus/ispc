@@ -63,8 +63,45 @@ def validate_body(body):
     return '\n'.join(lines) + '\n'
 
 
-def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=5, batch_ms=5, body_mode=False):
+
+MIXED_OPS = {'andb', 'cmpq', 'movzbl', 'sete', 'vblendpd', 'vblendvpd',
+             'vextracti128', 'vmovq', 'vpbroadcastq', 'vpermpd', 'vpermq',
+             'vpextrq', 'vpmovsxdq', 'vptest', 'vpxor', 'vxorpd', 'setb',
+             'vpackssdw', 'vpcmpeqq', 'vtestps'}
+MIXED_REGISTER = re.compile(r'%(?:(?:xmm|ymm)(?:[0-9]|1[0-5])|rax|eax|al|r(?:10|11)(?:d|b)?)$')
+
+
+def validate_mixed_body(body):
+    """Register-only dialect: body cannot change first-active value or framing."""
+    lines = []
+    for original in body.splitlines():
+        line = original.split('#', 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2 or parts[0] not in MIXED_OPS:
+            raise ValueError('mixed body opcode/directive/control flow not allowed: ' + line)
+        operands = [v.strip() for v in parts[1].split(',')]
+        if not 1 <= len(operands) <= 4:
+            raise ValueError('invalid mixed body operands')
+        for operand in operands:
+            if not (MIXED_REGISTER.fullmatch(operand) or re.fullmatch(r'\$(?:0x[0-9a-fA-F]+|[0-9]+)', operand)):
+                raise ValueError('mixed body touches memory or frame state: ' + operand)
+        if not MIXED_REGISTER.fullmatch(operands[-1]):
+            raise ValueError('mixed body destination must be scratch register')
+        lines.append(line)
+    if not lines or len(lines) > 64:
+        raise ValueError('mixed body must contain 1..64 instructions')
+    return '\n'.join(lines) + '\n'
+
+
+def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=5, batch_ms=5, body_mode=False,
+           fixture='all-on'):
+
     started = time.monotonic()
+    if fixture not in ('all-on', 'mixed-mask') or (fixture == 'mixed-mask' and not body_mode):
+        raise ValueError('mixed-mask fixture requires body mode')
+    mixed = fixture == 'mixed-mask'
     if cpu not in os.sched_getaffinity(0):
         raise ValueError('CPU unavailable')
     if platform.machine() != 'x86_64':
@@ -83,10 +120,11 @@ def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=5, batch_ms=5
         raise ValueError('body mode requires .inc; kernel mode requires .S/.s/.cpp/.so')
     output = Path(output).absolute()
     output.mkdir(parents=True, exist_ok=False)
-    report = dict(status='running', level='T0', fixture='reduce_equal_i64_all_on_v1',
+    report = dict(status='running', level='T0', fixture='reduce_equal_i64_proper_partial_v1' if mixed else 'reduce_equal_i64_all_on_v1',
                   cpu=cpu, groups=groups, pairs=pairs, batch_ms=batch_ms,
-                  framing='common_frame_v1' if body_mode else 'kernel_owned',
-                  correctness_scope='Independent all-on eight-lane i64 oracle with disjoint buffers; no mixed masks or ISPC integration.',
+                  framing='mixed_common_frame_v1' if mixed else 'common_frame_v1' if body_mode else 'kernel_owned',
+                  correctness_scope=('Independent proper partial sign-mask eight-lane i64 oracle, fully accessible disjoint buffers; excludes masks0/255, inactive poison and ISPC integration.' if mixed else
+                                     'Independent all-on eight-lane i64 oracle with disjoint buffers; no mixed masks or ISPC integration.'),
                   timing_unit='TSC reference ticks, not core cycles; wall nanoseconds also retained.',
                   limitation='Isolated out-of-line kernels/hypotheses are not proof of optimized ISPC caller behavior. No patch promotion.',
                   compiler_sha256=runner.sha256(compiler), screen_sha256=runner.sha256(Path(__file__)),
@@ -105,13 +143,15 @@ def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=5, batch_ms=5
     try:
         # Compile tiny artifacts under the shared lock, never rebuild ISPC/CMake.
         with runner.host_access(exclusive=False):
-            harness = output / 'screen_kernel.cpp'
-            shutil.copyfile(Path(__file__).with_name('screen_kernel.cpp'), harness)
+            harness_name = 'screen_mixed_kernel.cpp' if mixed else 'screen_kernel.cpp'
+            harness = output / harness_name
+            shutil.copyfile(Path(__file__).with_name(harness_name), harness)
             report['harness_sha256'] = runner.sha256(harness)
             frame = None
             if body_mode:
-                frame_path = output / 'screen_frame.S'
-                shutil.copyfile(Path(__file__).with_name('screen_frame.S'), frame_path)
+                frame_name = 'screen_mixed_frame.S' if mixed else 'screen_frame.S'
+                frame_path = output / frame_name
+                shutil.copyfile(Path(__file__).with_name(frame_name), frame_path)
                 frame = frame_path.read_text()
                 if frame.count('/* BODY_INSERTION_POINT */') != 1:
                     raise ValueError('invalid common frame')
@@ -122,7 +162,7 @@ def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=5, batch_ms=5
                 shutil.copyfile(source, frozen)
                 report['sources'][label] = dict(original=str(source), sha256=runner.sha256(frozen))
                 if body_mode:
-                    body = validate_body(frozen.read_text())
+                    body = (validate_mixed_body if mixed else validate_body)(frozen.read_text())
                     frozen = output / (label + '.S')
                     frozen.write_text(frame.replace('/* BODY_INSERTION_POINT */', body))
                     report['sources'][label]['expanded_sha256'] = runner.sha256(frozen)
@@ -162,8 +202,9 @@ def main():
     parser.add_argument('--pairs', type=int, default=5)
     parser.add_argument('--batch-ms', type=int, default=5)
     parser.add_argument('--body-mode', action='store_true', help='wrap .inc primitives in one immutable loop/output frame')
+    parser.add_argument('--fixture', choices=('all-on', 'mixed-mask'), default='all-on')
     args = parser.parse_args()
-    report = screen(args.baseline, args.candidate, args.cxx, args.output, args.cpu, args.groups, args.pairs, args.batch_ms, args.body_mode)
+    report = screen(args.baseline, args.candidate, args.cxx, args.output, args.cpu, args.groups, args.pairs, args.batch_ms, args.body_mode, args.fixture)
     print(json.dumps({key: report[key] for key in ('status', 'elapsed_seconds', 'build_seconds', 'measurement_seconds')}, indent=2))
     for case in report['result']['cases']:
         print(case['name'], case['screen_status'], round(case['median_ratio'], 4))

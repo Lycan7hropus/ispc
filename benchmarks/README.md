@@ -359,6 +359,67 @@ only the selected idea to T1/T2. Use profiling for a specific unresolved mechani
 do not make a broad profile a prerequisite for every cheap kernel screen. Candidate
 compiler build cost still exists at T1 and must be reported separately from timing.
 
+### Proper partial masks in a common T0 frame
+
+`screen.py --fixture mixed-mask --body-mode` uses a separately versioned fixture,
+`reduce_equal_i64_proper_partial_v1`. It never changes the frozen full-evaluator
+corpus. The six-argument SysV kernel ABI is input i64s, mask i32s, output values,
+output flags, group count, repeat count. Input, masks and outputs must be disjoint
+and fully accessible. Masks use the sign bit, including noncanonical negative
+words; every group must have at least one active and one inactive lane.
+
+The shared frame loads both input halves and the existing eight-word mask,
+selects the first active scalar with movemask/bit scan and broadcasts it. Bodies
+receive input halves in ymm0/ymm1, mask in ymm2 and broadcast base in ymm3, and
+return normalized EAX. Bodies can change vector registers, RAX, R10/R11 and flags;
+they cannot touch memory, pointers, stack, loop state or R9 (the saved scalar).
+The frame owns all pointer steps, repeats, output flags and conditional samevalue
+stores. It preserves output values on false as a fixture property, without making
+that claim about the public builtin contract. Zero groups/repeats write nothing.
+
+```bash
+python3 scripts/builtins_lab/screen.py --fixture mixed-mask --body-mode \
+  --baseline /absolute/reviewed-baseline-body.inc \
+  --candidate /absolute/reviewed-candidate-body.inc \
+  --cxx /absolute/clang++ --cpu 2 --output /absolute/new/mixed-t0
+```
+
+The independent scalar oracle covers all 254 proper partial masks, four
+sign-equivalent representations, an equal input and every bit in every lane as
+a single mismatch, plus zero/odd/multiple groups and repeated calls. It checks
+true samevalue, false preservation and input/mask/output boundary canaries. The
+timed corpus uses masks 0x55/0xaa/0x7f/0xfe with equal, first-active-different and
+last-active-different data. These three cases combine densities; they are not
+separate estimates for each mask. Presets, threshold and paired order match the
+existing T0 screen; a promising result earns only real-caller investigation.
+
+This frame has no guard for empty/full masks; its fixed fixture never generates
+them. It cannot test all-off behavior, inaccessible inactive addresses, arbitrary
+aliasing or LLVM poison at runtime. Poison suppression needs an IR/source argument
+using `select(active, eq, true)` before reduction. A modeled LLVM comparison graph
+must be labeled as modeled, even when its emitted body is retained exactly. Record
+any register renaming, removed wrappers and normalization adapters. Common framing
+does not eliminate code-layout effects or prove production ISPC lowering.
+
+### Disposition of uncertain T2 measurements
+
+Keep the original evaluator rule and all earlier inconclusive results unchanged.
+The reviewed paired-median proposal is not an installed acceptance policy.
+Observed min/max envelopes and descriptive order-statistic ranges are not
+confidence guarantees. Record pairing, order, drift and serial correlation to
+explain uncertainty; these diagnostics cannot prove independent stationary
+samples or turn an inconclusive result into a pass.
+
+A completed 32-pair baseline-only diagnostic of the frozen 22-case corpus took
+about 30 seconds with retained binaries. It establishes practical cost for that
+session, not statistical calibration. A mandatory twelve-session campaign is not
+justified as an iid certification step: finitely many quiet sessions cannot prove
+the needed assumptions. Do not fit invalidation thresholds to candidate data or
+silently install null thresholds. A future selected candidate may justify a new
+reviewed, frozen, bounded paired diagnostic, with no acceptance claim, replacement
+pairs, post-result budget changes or repeated trials until it passes. Full T2 and
+fresh confirmation remain distinct from exploratory diagnosis.
+
 ### Short real-caller T1 probes
 
 `focus.py` runs a frozen small caller panel using existing benchmark and oracle
