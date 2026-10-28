@@ -60,6 +60,16 @@ def validate(report, repo):
                 raise ValueError('evidence observation required')
         if candidate['evidence_level'] != 'source_only' and not candidate['evidence']:
             raise ValueError('codegen/profile claims require retained evidence')
+        if candidate['evidence_level'] == 'profiled':
+            profile_path = Path(candidate.get('profile_report', ''))
+            if not profile_path.is_absolute() or not profile_path.is_file():
+                raise ValueError('profiled claims require a retained profile report')
+            profile = json.loads(profile_path.read_text())
+            if (profile.get('status') not in ('collected_for_review', 'partial') or
+                    profile.get('workload_kind') not in ('application', 'representative_kernel', 'microbenchmark')):
+                raise ValueError('profile report must identify successful collection and workload kind')
+            if str(profile_path) not in {entry['path'] for entry in candidate['evidence']}:
+                raise ValueError('profile report must be included in hashed evidence')
     if not isinstance(report.get('selection_reason'), str) or not report['selection_reason'].strip():
         raise ValueError('selection or abstention reason required')
     selected = report.get('selected')
@@ -71,6 +81,8 @@ def validate(report, repo):
     if candidate['evidence_level'] == 'source_only' or candidate['relevance_level'] == 'unmeasured':
         raise ValueError('selection requires observed codegen and an identified representative caller')
     return dict(status='ready_for_patch_design', selected=selected,
+                runtime_evidence=('profiled_requires_workload_review' if candidate['evidence_level'] == 'profiled'
+                                  else 'not_established'),
                 limitation='Structural evidence check; human/code review must assess claims. '
                            'This does not prove a runtime hotspot or authorize evaluator expansion.')
 
@@ -80,6 +92,10 @@ def prompt(repo, baseline, output):
 Repository: {repo}
 Pinned baseline: {baseline}
 Output directory: {output}
+
+Objective: a reusable builtin-optimization framework, not tuning one application.
+An application profile is optional. Use a controlled family workload corpus and
+scope conclusions to its cases and hardware; do not request an application as a gate.
 
 Your task is analysis and evidence collection, not patch generation. Read applicable
 repository instructions. Do not modify tracked files, tests, benchmarks, evaluators,
@@ -103,6 +119,12 @@ or measurement policies. Use an owned output directory for probes and results.
 4. Explain the dependency/memory/instruction cost mechanism and a result that would
    disprove each hypothesis. Downgrade ideas LLVM already optimizes. Consider all
    previously rejected shuffle attempts and their constant/masked regressions.
+   Inventory runtime evidence separately: controlled workload, input distributions,
+   sampled hotspots and counters, available profiler/PMU capabilities, and missing
+   data. A representative benchmark is a valid primary workload for this library
+   framework. Final assembly alone does not identify a runtime hotspot. Profile the
+   optimized caller/workload rather than the compiler process or an isolated
+   always-inlined symbol. Do not label a benchmark as an application profile.
 5. Produce report.json using the contract below and a concise ranked explanation.
    Select at most one candidate, and only with codegen evidence and an identified
    representative caller. Abstain if none qualifies. Do not manufacture selection
@@ -119,6 +141,7 @@ Report contract:
    "caller_relevance":"identified caller and workload assumptions",
    "relevance_level":"unmeasured|representative|profiled",
    "evidence_level":"source_only|codegen_verified|profiled",
+   "profile_report":null,
    "evidence":[{{"path":"/absolute/artifact", "sha256":"hex digest",
      "command":["program","argument"], "observation":"what this artifact shows"}}],
    "risks":"semantic and constant/masked regression risks",
@@ -128,6 +151,9 @@ Report contract:
 
 Validation: python3 scripts/builtins_lab/research.py validate {output}/report.json --repo {repo}
 The validator checks structure and artifact integrity, not the truth of conclusions.
+For evidence_level=profiled, profile_report must name a retained collect_profile.py
+report included in hashed evidence. Raw data, workload assumptions and limitations
+still need technical review. Counter totals alone do not localize an instruction.
 Stop after handing off analysis. Patch design follows a separate review of the
 selected hypothesis and evaluator coverage; do not expand the existing evaluator
 allowlist to make a proposal fit. Do not publish or commit.
@@ -142,6 +168,13 @@ Baseline: {report['baseline_revision']}
 Selected hypothesis: {selected['id']}
 Output: {output}
 Read the frozen research-report.json in this directory and applicable repository instructions.
+
+The objective is a builtin framework. A target application is not required.
+Freeze a controlled family corpus: masks/density, constant/dynamic arguments,
+data distributions, locality, dependency chains versus independent operations,
+inlining/hoisting and result consumption. Cover relevant dimensions rather than
+an arbitrary full Cartesian product. Keep per-case effects and regression budgets;
+do not invent application-frequency weights or claim universal CPU wins.
 
 The coordinator reviewed this hypothesis for experiment design, not as a proven
 runtime hotspot or speedup. Keep the evidence level and uncertainties explicit.
@@ -169,6 +202,10 @@ allowlists. Use the existing baseline toolchain. Do not publish or commit.
    semantic proof obligations, disproof criterion, and regression risks.
    Do not implement the candidate yet. If the oracle, contract or relevance fails,
    abstain and state the next evidence needed rather than forcing a patch.
+   A patch experiment also needs reviewed runtime evidence for its intended workload.
+   List missing corpus evidence explicitly. Microbenchmarks are valid intended
+   workloads here; scope conclusions to their cases and CPU. An application
+   profile is optional and its absence must not block library-level investigation.
 5. Produce design.json containing baseline_revision, selected, status
    (ready_for_evaluator_review or needs_more_evidence), contract, scope,
    oracle_commands, oracle_results, artifacts (paths and SHA256), measurement_cases,

@@ -268,6 +268,64 @@ The scripts generate tasks and validate artifacts; agent dispatch and technical
 review belong to the coordinator. The low-level `evaluate.py` remains available
 for reproducing existing experiments and does not enforce this research workflow.
 
+### Runtime evidence and profiler inputs
+
+The objective is a reusable framework for builtin families. A particular
+application is not required. Before a patch experiment, review a baseline execution
+profile for the controlled family workload corpus. Representative microbenchmarks
+are valid primary inputs here. Keep their conclusions scoped to the cases and CPU;
+application profiles can later add external validation, without becoming a gate.
+Oracle execution is a correctness workload and must not be substituted for the
+optimization workload.
+
+Freeze relevant corpus dimensions before candidates exist: active masks/density,
+constant and dynamic arguments, data distributions, working-set/locality regimes,
+dependency chains and independent calls, inlining/hoisting, and result consumption.
+Use a justified set of cases rather than an arbitrary Cartesian product. Compare
+per-case effects and worst regressions under the frozen policy; do not invent
+application-frequency weights or collapse them into a universal score. Profiling
+explains the mechanism in those contexts, while separate timing determines benefit.
+
+The research packet should include workload/input provenance, binary/toolchain
+hashes, optimized build flags and symbol availability, exact replay commands,
+sampled hot regions mapped to caller source/assembly, and raw hardware counters.
+Start with time distribution, then investigate the observed bottleneck: memory
+access, instruction/dependency cost, speculation, or front-end pressure. Generic
+counter totals do not establish a top-down breakdown or pinpoint an instruction.
+Inlined builtins are analyzed inside the optimized caller. Sampling can skid;
+source attribution depends on debug information and compiler transformations.
+
+`collect_profile.py` retains basic user-mode counters, cycle samples and annotated
+assembly using an explicitly selected Linux perf binary. It shares the host lock
+with timing experiments, pins a CPU and records failures and unavailable counters.
+For example, adjust paths, inputs and filter to a meaningful several-second run:
+
+```bash
+python3 scripts/builtins_lab/collect_profile.py --perf /absolute/perf --cpu 2 \
+  --kind microbenchmark --description "input distribution and working set" \
+  --output /absolute/new/profile -- /absolute/benchmark --benchmark_filter=CASE
+```
+
+Read `profile.json`, `stat.csv`, `perf.data`, `hotspots.log` and `annotation.log`
+together. Check counter availability, running percentages/multiplexing, sample
+count, unresolved symbols and workload coverage before interpreting ratios.
+`collected_for_review` means artifacts were collected, not that a bottleneck was
+proven. Keep profiler runs separate from unprofiled performance acceptance runs.
+The collector does not gather model-specific memory-latency or top-down events;
+those need a reviewed CPU-specific collection (for example VTune) if the observed
+problem calls for it. Do not infer them from IPC or cache-miss totals alone.
+
+The research validator requires a hashed collector report for `profiled` claims.
+It still permits codegen-only hypotheses to reach oracle/design review, while
+explicitly returning `runtime_evidence: not_established`. No such status is proof
+of application relevance, which is not a prerequisite here. Review missing corpus evidence
+before assigning a patch experiment.
+
+The workflow follows Intel's [Hotspots then Microarchitecture Exploration
+guidance](https://www.intel.com/content/www/us/en/docs/vtune-profiler/user-guide/2026-1/general-exploration-analysis.html).
+Profiler capability must be checked on the actual host/VM; installing a tool alone
+does not establish PMU event availability.
+
 ### Submitting a patch to the fixed evaluator
 
 `evaluate.py` runs the complete shuffle pilot without manual build or measurement

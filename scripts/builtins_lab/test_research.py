@@ -66,6 +66,11 @@ class ResearchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             research.validate(self.report, self.root)
 
+    def test_profile_claim_cannot_use_assembly_as_runtime_evidence(self):
+        self.report['candidates'][0]['evidence_level'] = 'profiled'
+        with self.assertRaisesRegex(ValueError, 'profile report'):
+            research.validate(self.report, self.root)
+
     def test_design_handoff_refuses_abstention_and_freezes_selected_report(self):
         report = self.root / 'report.json'
         output = self.root / 'design'
