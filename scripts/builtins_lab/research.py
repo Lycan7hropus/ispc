@@ -215,6 +215,19 @@ review actual caller instructions before timing.
 T2: only the selected integrated candidate reaches full fixed-evaluator validation,
 all frozen cases, independent confirmation and any mechanism-specific profiling.
 Do not repeat the family survey or demand a full profile for each T0 variant.
+Inspect static-mask versus dynamic-mask specialization: a general vector path can
+replace an already cheaper constant-mask implementation. Existing compile-time
+helpers must resolve in actual caller IR; retain option/O0 qualifications. Keep
+all original negative controls. Folded controls may mostly measure adapter work;
+matching executed bytes and different addresses do not prove layout causality.
+Revalidate constant folding for every candidate using executed CFG/trip counts,
+not function instruction counts or merely resolved helper calls. A late helper
+can inhibit loop collapse even if the selected mask algorithm is correct. Old
+profiles do not characterize new binaries with changed executed control paths.
+For perf stat repeated adaptive benchmarks, retain all repetition documents;
+whole-process counters include calibration/startup. Never normalize them by the
+separate record-run iteration count. Samples/counters remain exploratory, not
+acceptance, and a failed bounded profiling bundle must not be retried to fill gaps.
 Keep stage, tested domain, time budget and next promotion criterion in design.json.
 Leave inconclusive T2 results unchanged. Paired order/drift/correlation diagnostics
 are descriptive, not acceptance or iid proof. The paired-median proposal is not an

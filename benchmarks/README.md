@@ -620,6 +620,38 @@ The collector does not gather model-specific memory-latency or top-down events;
 those need a reviewed CPU-specific collection (for example VTune) if the observed
 problem calls for it. Do not infer them from IPC or cache-miss totals alone.
 
+For adaptive benchmarks, `perf stat -r N` runs N complete processes. Keep and
+decode all N benchmark output documents separately. A mean whole-process counter
+divided by the mean reported iteration count is only a descriptive proxy: startup,
+calibration and preflight work remain in the counter numerator. Never divide stat
+aggregates by the separate `perf record` process's iterations, or treat repetitions
+as new acceptance observations. Missing repetition metadata means this normalized
+metric is unavailable. Retain counter running fractions and raw denominators;
+reported counter variation is not a confidence interval. Short cycle profiles may
+contain only dozens of samples, insufficient for precise instruction costs.
+
+Check caller specialization before generalizing a dynamic-mask win. The old
+constant-mask path may already lower to a cheaper graph. Freeze both static and
+runtime masks in T1, and verify any compile-time helper actually resolves in the
+optimized caller; O0 or disabled mask optimizations may behave differently. A
+folded constant control can mostly measure the host adapter and dispatch.
+Verify that it is still folded in each candidate: inspect the executed CFG and
+trip count for the frozen input, not just whole-function instruction counts or
+the absence of helper calls. A late-resolved specialization helper can leave an
+actual loop where the baseline computes a closed-form count. A shorter function
+can therefore execute more work. Earlier profiling of a folded control does not
+transfer to a new binary whose executed path changed. Retain
+its negative timing and inspect executed bytes, addresses and sample distribution;
+do not subtract overhead, tune alignment, discard the control or declare layout
+causality from matching source instructions alone.
+
+Profiling bundles should freeze their cases, order, identities and total deadline
+before execution, and stop on the first failure without replacement. The collector
+owns exclusive host access; a parent supervisor must not hold a shared/exclusive
+host lock while waiting on that child. Its outer process timeout must also bound
+the collector's lock wait and preserve partial evidence. Source/LLVM preparation
+can resume once the serialized profiling phase is finished.
+
 The research validator requires a hashed collector report for `profiled` claims.
 It still permits codegen-only hypotheses to reach oracle/design review, while
 explicitly returning `runtime_evidence: not_established`. No such status is proof
