@@ -17,13 +17,15 @@ import time
 import run as runner
 
 
-# Estimator defaults: about 6 s of timing per case (3 cases, ~20 s per screen with build).
-DEFAULT_PAIRS = 300
-DEFAULT_REPS = 5
-DEFAULT_BATCH_MS = 2
+# Estimator defaults: ~4.8 s of timing per case, ~20 s per screen with build and bootstrap.
+# Short batches matter: on the WSL2 bench host the clock drifts within milliseconds, so only
+# adjacent ~0.1 ms batches see the same frequency (2 ms batches gave +/-2% run-level bias).
+DEFAULT_PAIRS = 1200
+DEFAULT_REPS = 20
+DEFAULT_BATCH_MS = 0.1
 TRIM = 0.2
 BOOTSTRAP_RESAMPLES = 2000
-NOISE_FLOOR = 0.01  # never call a difference below 1%, whatever the A/A control says
+NOISE_FLOOR = 0.005  # never call a difference below 0.5%, whatever the A/A control says
 
 
 def trimmed_mean(values, trim=TRIM):
@@ -150,8 +152,8 @@ def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=DEFAULT_PAIRS
     flags = Path('/proc/cpuinfo').read_text().split('flags', 1)[-1].split('\n', 1)[0].split()
     if not {'avx2', 'rdtscp'} <= set(flags):
         raise ValueError('AVX2 and RDTSCP required by initial fixture')
-    if not 1 <= groups <= 65536 or not 3 <= pairs <= 4000 or not 1 <= batch_ms <= 50 or not 1 <= reps <= 31:
-        raise ValueError('groups 1..65536, pairs 3..4000, batch-ms 1..50, reps 1..31 required')
+    if not 1 <= groups <= 65536 or not 3 <= pairs <= 4000 or not 0.02 <= batch_ms <= 50 or not 1 <= reps <= 101:
+        raise ValueError('groups 1..65536, pairs 3..4000, batch-ms 0.02..50, reps 1..101 required')
     if not NOISE_FLOOR <= noise_threshold < 0.5:
         raise ValueError(f'noise threshold must be in [{NOISE_FLOOR}, 0.5)')
     # Timing budget: 3 cases x pairs x reps x 2 sides x batch; slower candidates take longer.
@@ -167,7 +169,7 @@ def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=DEFAULT_PAIRS
     output.mkdir(parents=True, exist_ok=False)
     report = dict(status='running', level='T0', fixture='reduce_equal_i64_proper_partial_v1' if mixed else 'reduce_equal_i64_all_on_v1',
                   cpu=cpu, groups=groups, pairs=pairs, batch_ms=batch_ms, reps=reps,
-                  estimator=dict(pair_statistic='per-side minimum of reps interleaved batches, ratio candidate/baseline TSC',
+                  estimator=dict(pair_statistic='median over reps adjacent ABBA batch couples of candidate/baseline TSC ratio',
                                  summary=f'{int(TRIM * 100)}% trimmed mean of pair ratios',
                                  ci=f'percentile bootstrap 95% ({BOOTSTRAP_RESAMPLES} resamples)',
                                  verdict='direction only when the whole CI is beyond 1 +/- noise_threshold',
@@ -250,8 +252,8 @@ def main():
     parser.add_argument('--cpu', type=int, required=True)
     parser.add_argument('--groups', type=int, default=32)
     parser.add_argument('--pairs', type=int, default=DEFAULT_PAIRS, help='interleaved A/B pairs per case')
-    parser.add_argument('--batch-ms', type=int, default=DEFAULT_BATCH_MS, help='target length of one timed batch')
-    parser.add_argument('--reps', type=int, default=DEFAULT_REPS, help='batches per side per pair; minimum kept')
+    parser.add_argument('--batch-ms', type=float, default=DEFAULT_BATCH_MS, help='target length of one timed batch')
+    parser.add_argument('--reps', type=int, default=DEFAULT_REPS, help='adjacent A/B batch couples per pair; median kept')
     parser.add_argument('--noise-threshold', type=float, default=NOISE_FLOOR,
                         help='relative effect the CI must clear (bench_adapter derives it from its A/A run)')
     parser.add_argument('--body-mode', action='store_true', help='wrap .inc primitives in one immutable loop/output frame')

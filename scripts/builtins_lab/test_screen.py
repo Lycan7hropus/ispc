@@ -19,7 +19,8 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(screen.classify([0.95, 0.97]), 'promising_for_context_check')
         self.assertEqual(screen.classify([1.02, 1.04]), 'slower_in_this_screen')
         self.assertEqual(screen.classify([0.97, 1.001]), 'unclear')
-        self.assertEqual(screen.classify([0.995, 1.005]), 'unclear')
+        self.assertEqual(screen.classify([0.996, 1.004]), 'unclear')
+        self.assertEqual(screen.classify([0.994, 0.999]), 'unclear')
         # The CI clears 1% but not an A/A-derived 3% threshold.
         self.assertEqual(screen.classify([1.015, 1.025], 0.01), 'slower_in_this_screen')
         self.assertEqual(screen.classify([1.015, 1.025], 0.03), 'unclear')
@@ -56,8 +57,8 @@ class DecisionTests(unittest.TestCase):
     def test_bench_threshold_follows_aa_noise_with_floor(self):
         quiet = dict(result=dict(cases=[dict(ci95=[0.998, 1.003]), dict(ci95=[0.999, 1.001])]))
         noisy = dict(result=dict(cases=[dict(ci95=[0.97, 1.004]), dict(ci95=[0.99, 1.012])]))
-        self.assertEqual(bench_adapter.aa_noise_threshold(quiet, 0.01), 0.01)
-        self.assertAlmostEqual(bench_adapter.aa_noise_threshold(noisy, 0.01), 0.03)
+        self.assertEqual(bench_adapter.aa_noise_threshold(quiet, 0.005), 0.005)
+        self.assertAlmostEqual(bench_adapter.aa_noise_threshold(noisy, 0.005), 0.03)
 
 
 @unittest.skipUnless(platform.machine() == 'x86_64' and Path('/proc/cpuinfo').exists(), 'Linux x86 fixture')
@@ -100,7 +101,7 @@ extern "C" void lab_kernel(const uint64_t *in, uint64_t *v, uint64_t *f, size_t 
 
     def run_screen(self, candidate, destination):
         return screen.screen(self.good,candidate,self.cxx,destination,min(os.sched_getaffinity(0)),
-                             groups=3,pairs=3,batch_ms=1,reps=2)
+                             groups=3,pairs=3,batch_ms=0.1,reps=3)
 
     def test_identity_screen_retains_inputs_and_never_accepts_patch(self):
         out = self.root/'identity'
@@ -112,7 +113,7 @@ extern "C" void lab_kernel(const uint64_t *in, uint64_t *v, uint64_t *f, size_t 
         self.assertEqual((out/'baseline.so').read_bytes(),self.good.read_bytes())
         self.assertEqual(len(report['result']['cases'][0]['pairs']),3)
         case = report['result']['cases'][0]
-        self.assertEqual(case['reps'], 2)
+        self.assertEqual(case['reps'], 3)
         self.assertEqual(case['noise_threshold'], screen.NOISE_FLOOR)
         self.assertLessEqual(case['ci95'][0], case['ci95'][1])
         self.assertIn(case['screen_status'], ('unclear', 'promising_for_context_check', 'slower_in_this_screen'))

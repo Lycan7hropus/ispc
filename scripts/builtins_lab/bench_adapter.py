@@ -150,7 +150,7 @@ def t0(task, task_dir, out_dir, result):
         # A/A first: its CI tells how far identical code drifts in this run; the main verdict must clear it.
         aa = screen_once(baseline, baseline, out_dir / 'raw' / f'aa-{tag}', fixture)
         aa_ok_run = aa.get('status') == 'screened_not_accepted'
-        floor = aa.get('estimator', {}).get('noise_floor', 0.01)
+        floor = aa.get('estimator', {}).get('noise_floor', 0.005)
         threshold = aa_noise_threshold(aa, floor) if aa_ok_run else None
         main = screen_once(baseline, candidate, out_dir / 'raw' / f't0-{tag}', fixture, threshold)
         result['t0_seconds'].append(dict(tag=tag, aa=aa.get('elapsed_seconds'), main=main.get('elapsed_seconds')))
@@ -188,7 +188,7 @@ def t0(task, task_dir, out_dir, result):
             ci_text = f", CI95 {ci[0]:.4f}..{ci[1]:.4f}" if ci else ''
             result['notes'].append(f"{tag}: A/A {case['name']} median {case['median_ratio']:.3f}{ci_text}, "
                                    f"pair range {low:.3f}..{high:.3f} -> {verdict}")
-        result['notes'].append(f'{tag}: noise threshold {threshold * 100:.2f}% (A/A CI excursion, floor {floor * 100:.0f}%)')
+        result['notes'].append(f'{tag}: noise threshold {threshold * 100:.2f}% (A/A CI excursion, floor {floor * 100:.1f}%)')
     result['correct'] = correct
     result['aa_control'] = 'pass' if aa_ok and correct else 'fail'
     result['notes'].append('T0 is a standalone kernel screen; it never accepts a builtin patch.')

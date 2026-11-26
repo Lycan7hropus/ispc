@@ -3,7 +3,6 @@
 // T0 fixture: isolated all-on eight-lane integer64 reduce_equal, not an ISPC ABI.
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <dlfcn.h>
@@ -156,30 +155,43 @@ int main(int argc, char **argv) {
                                          : "late_diff")
                       << "\",\"groups\":" << groups << ",\"repeats\":" << repeats << ",\"reps\":" << reps
                       << ",\"pairs\":[";
+            std::vector<double> ratios(reps), baseTicks(reps), candTicks(reps), baseNs(reps), candNs(reps);
+            auto median = [](std::vector<double> values) {
+                auto middle = values.begin() + values.size() / 2;
+                std::nth_element(values.begin(), middle, values.end());
+                double upper = *middle;
+                if (values.size() % 2)
+                    return upper;
+                return (upper + *std::max_element(values.begin(), middle)) / 2;
+            };
             for (size_t pair = 0; pair < pairs; ++pair) {
-                // One pair = reps interleaved batches per side (order alternates between pairs);
-                // each side keeps its least-disturbed (minimum) batch.
-                Sample b{HUGE_VAL, HUGE_VAL}, c{HUGE_VAL, HUGE_VAL};
+                // One pair = reps adjacent baseline/candidate couples of short batches in ABBA order
+                // (the first order alternates between pairs). Adjacent batches see the same clock
+                // state, so each couple's ratio cancels frequency drift; the pair keeps their median.
                 for (size_t rep = 0; rep < reps; ++rep) {
-                    Sample sb{}, sc{};
-                    if (pair % 2 == 0) {
-                        sb = measure(fixture, baseline.kernel, repeats);
-                        sc = measure(fixture, candidate.kernel, repeats);
+                    Sample b{}, c{};
+                    if ((pair + rep) % 2 == 0) {
+                        b = measure(fixture, baseline.kernel, repeats);
+                        c = measure(fixture, candidate.kernel, repeats);
                     } else {
-                        sc = measure(fixture, candidate.kernel, repeats);
-                        sb = measure(fixture, baseline.kernel, repeats);
+                        c = measure(fixture, candidate.kernel, repeats);
+                        b = measure(fixture, baseline.kernel, repeats);
                     }
-                    b = {std::min(b.ticks, sb.ticks), std::min(b.ns, sb.ns)};
-                    c = {std::min(c.ticks, sc.ticks), std::min(c.ns, sc.ns)};
+                    ratios[rep] = c.ticks / b.ticks;
+                    baseTicks[rep] = b.ticks;
+                    candTicks[rep] = c.ticks;
+                    baseNs[rep] = b.ns;
+                    candNs[rep] = c.ns;
                 }
                 if (pair)
                     std::cout << ',';
                 double work = double(groups) * double(repeats);
                 std::cout << "{\"order\":\"" << (pair % 2 == 0 ? "AB" : "BA")
-                          << "\",\"baseline_tsc_ticks_per_group\":" << b.ticks / work
-                          << ",\"candidate_tsc_ticks_per_group\":" << c.ticks / work
-                          << ",\"baseline_ns_per_group\":" << b.ns / work
-                          << ",\"candidate_ns_per_group\":" << c.ns / work << ",\"ratio\":" << c.ticks / b.ticks << '}';
+                          << "\",\"baseline_tsc_ticks_per_group\":" << median(baseTicks) / work
+                          << ",\"candidate_tsc_ticks_per_group\":" << median(candTicks) / work
+                          << ",\"baseline_ns_per_group\":" << median(baseNs) / work
+                          << ",\"candidate_ns_per_group\":" << median(candNs) / work << ",\"ratio\":" << median(ratios)
+                          << '}';
             }
             std::cout << "]}";
         }
