@@ -359,6 +359,34 @@ only the selected idea to T1/T2. Use profiling for a specific unresolved mechani
 do not make a broad profile a prerequisite for every cheap kernel screen. Candidate
 compiler build cost still exists at T1 and must be reported separately from timing.
 
+### All-on popcnt int64 T0 fixture
+
+`screen.py --fixture popcnt-i64` (kernel mode only) screens `popcnt(varying int64)
+-> varying int32` for eight lanes. Kernels export a different adapter ABI:
+
+```cpp
+extern "C" void lab_kernel(const uint64_t *input, int32_t *counts,
+                           size_t groups, size_t repeats);
+```
+
+Every repetition writes `counts[g * 8 + lane]` for all groups; no other bytes.
+`screen_popcnt_kernel.cpp` checks both kernels before any timing against a
+bitwise oracle (no popcnt instruction): random/sparse/dense data at 0, 1, 3 and
+the timed group counts, every lane x bit with all other bits clear and set,
+every count 0..64 in every lane, and nibble/byte boundary patterns. It also
+checks one-group canaries on both sides of the output, unchanged input, and
+that zero repetitions write nothing. Timed cases are `random`, `sparse` and
+`dense` with the same paired estimator as `reduce_equal`. Kernels are built
+with `-mavx2 -mpopcnt`.
+
+`screen_examples/popcnt_i64_scalar.S` is the default baseline: its loop body is
+what ISPC emits today for `dst[i] = popcnt(src[i])` on avx2-i32x8 (eight
+memory-operand `popcntq`, `vpinsrd` assembly, two stores). Callers whose value
+is already in registers pay extra extracts that this baseline does not model.
+`popcnt_i64_avx2_lut.S` (vpshufb nibble lookup + vpsadbw) is a positive control;
+on the i9-11900K bench host it screens at about 0.588x, and a baseline A/A at
+1.0000 +/- 0.003%. Masked/partial popcnt and ISPC integration remain T1 work.
+
 ### Proper partial masks in a common T0 frame
 
 `screen.py --fixture mixed-mask --body-mode` uses a separately versioned fixture,
