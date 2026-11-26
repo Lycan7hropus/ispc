@@ -27,13 +27,18 @@ LLVM = Path(os.environ.get('BENCH_LLVM', '/usr/lib/llvm-20/bin'))
 CPU = int(os.environ.get('BENCH_CPU', '2'))
 
 T0_FIXTURES = {
-    # builtin -> fixture knowledge. The only reviewed T0 fixture today.
+    # builtin -> reviewed screen.py fixtures. masks: task mask -> screen fixture ('*' = any other mask).
     'reduce_equal': dict(types={'int64'}, targets={'avx2-i32x8'},
+                         masks={'all': 'all-on', '*': 'mixed-mask'},
                          default_baseline={'.S': LAB / 'screen_examples/reduce_equal_scalar.S',
                                            '.s': LAB / 'screen_examples/reduce_equal_scalar.S',
                                            '.cpp': LAB / 'screen_examples/reduce_equal_scalar.S',
                                            '.so': LAB / 'screen_examples/reduce_equal_scalar.S',
                                            '.inc': LAB / 'screen_examples/reduce_equal_body.inc'}),
+    'popcnt': dict(types={'int64'}, targets={'avx2-i32x8'},
+                   masks={'all': 'popcnt-i64'},
+                   default_baseline={suffix: LAB / 'screen_examples/popcnt_i64_scalar.S'
+                                     for suffix in ('.S', '.s', '.cpp', '.so')}),
 }
 EVAL_TYPES = {'int16', 'int64', 'double'}
 TIER_POLICY = {
@@ -130,6 +135,8 @@ def t0(task, task_dir, out_dir, result):
         raise ValueError('T0 needs candidate.{S,s,cpp,so,inc} in the task folder')
     baseline = find_one(task_dir, 'baseline', ('.S', '.s', '.cpp', '.so', '.inc'))
     if baseline is None:
+        if candidate.suffix not in spec['default_baseline']:
+            raise ValueError(f"T0 {task['builtin']} fixture has no default baseline for {candidate.suffix} candidates")
         baseline = spec['default_baseline'][candidate.suffix]
         result['notes'].append(f'baseline: lab default {baseline.relative_to(REPO)}')
     else:
@@ -140,7 +147,9 @@ def t0(task, task_dir, out_dir, result):
     correct, aa_ok = True, True
     result.update(aa_cases=[], t0_seconds=[])
     for mask in task['masks']:
-        fixture = 'all-on' if mask == 'all' else 'mixed-mask'
+        fixture = spec['masks'].get(mask, spec['masks'].get('*'))
+        if fixture is None:
+            raise ValueError(f"T0 {task['builtin']} fixture supports masks {sorted(spec['masks'])} only, not '{mask}'")
         if fixture == 'mixed-mask' and candidate.suffix != '.inc':
             raise ValueError(f"mask '{mask}' uses the mixed-mask fixture, which needs .inc bodies")
         tag = 'all-on' if mask == 'all' else f'mixed-{mask}'

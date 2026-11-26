@@ -138,20 +138,38 @@ def validate_mixed_body(body):
     return '\n'.join(lines) + '\n'
 
 
+# Reviewed T0 fixtures. Each harness owns its oracle, ABI and case names.
+FIXTURES = {
+    'all-on': dict(name='reduce_equal_i64_all_on_v1', harness='screen_kernel.cpp', frame='screen_frame.S',
+                   body=validate_body, body_mode={False, True}, cpu_flags={'avx2', 'rdtscp'}, build_flags=(),
+                   scope='Independent all-on eight-lane i64 oracle with disjoint buffers; no mixed masks or ISPC integration.'),
+    'mixed-mask': dict(name='reduce_equal_i64_proper_partial_v1', harness='screen_mixed_kernel.cpp',
+                       frame='screen_mixed_frame.S', body=validate_mixed_body, body_mode={True},
+                       cpu_flags={'avx2', 'rdtscp'}, build_flags=(),
+                       scope='Independent proper partial sign-mask eight-lane i64 oracle, fully accessible disjoint buffers; excludes masks0/255, inactive poison and ISPC integration.'),
+    'popcnt-i64': dict(name='popcnt_i64_all_on_v1', harness='screen_popcnt_kernel.cpp', frame=None, body=None,
+                       body_mode={False}, cpu_flags={'avx2', 'rdtscp', 'popcnt'}, build_flags=('-mpopcnt',),
+                       scope='Independent bitwise all-on eight-lane i64 -> i32 popcnt oracle (every lane x bit, every count 0..64, '
+                             'nibble/byte boundary patterns) with guarded disjoint buffers; no masks or ISPC integration.'),
+}
+
+
 def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=DEFAULT_PAIRS, batch_ms=DEFAULT_BATCH_MS,
            body_mode=False, fixture='all-on', reps=DEFAULT_REPS, noise_threshold=NOISE_FLOOR):
 
     started = time.monotonic()
-    if fixture not in ('all-on', 'mixed-mask') or (fixture == 'mixed-mask' and not body_mode):
-        raise ValueError('mixed-mask fixture requires body mode')
-    mixed = fixture == 'mixed-mask'
+    if fixture not in FIXTURES:
+        raise ValueError('unknown fixture: ' + str(fixture))
+    spec = FIXTURES[fixture]
+    if body_mode not in spec['body_mode']:
+        raise ValueError(f"{fixture} fixture {'does not support' if body_mode else 'requires'} body mode")
     if cpu not in os.sched_getaffinity(0):
         raise ValueError('CPU unavailable')
     if platform.machine() != 'x86_64':
         raise ValueError('initial T0 fixture requires x86-64')
     flags = Path('/proc/cpuinfo').read_text().split('flags', 1)[-1].split('\n', 1)[0].split()
-    if not {'avx2', 'rdtscp'} <= set(flags):
-        raise ValueError('AVX2 and RDTSCP required by initial fixture')
+    if not spec['cpu_flags'] <= set(flags):
+        raise ValueError(f"{' and '.join(sorted(spec['cpu_flags'])).upper()} required by {fixture} fixture")
     if not 1 <= groups <= 65536 or not 3 <= pairs <= 4000 or not 0.02 <= batch_ms <= 50 or not 1 <= reps <= 101:
         raise ValueError('groups 1..65536, pairs 3..4000, batch-ms 0.02..50, reps 1..101 required')
     if not NOISE_FLOOR <= noise_threshold < 0.5:
@@ -167,7 +185,7 @@ def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=DEFAULT_PAIRS
         raise ValueError('body mode requires .inc; kernel mode requires .S/.s/.cpp/.so')
     output = Path(output).absolute()
     output.mkdir(parents=True, exist_ok=False)
-    report = dict(status='running', level='T0', fixture='reduce_equal_i64_proper_partial_v1' if mixed else 'reduce_equal_i64_all_on_v1',
+    report = dict(status='running', level='T0', fixture=spec['name'],
                   cpu=cpu, groups=groups, pairs=pairs, batch_ms=batch_ms, reps=reps,
                   estimator=dict(pair_statistic='median over reps adjacent ABBA batch couples of candidate/baseline TSC ratio',
                                  summary=f'{int(TRIM * 100)}% trimmed mean of pair ratios',
@@ -175,9 +193,8 @@ def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=DEFAULT_PAIRS
                                  verdict='direction only when the whole CI is beyond 1 +/- noise_threshold',
                                  noise_floor=NOISE_FLOOR, planned_timing_seconds=planned_seconds),
                   noise_threshold=noise_threshold,
-                  framing='mixed_common_frame_v1' if mixed else 'common_frame_v1' if body_mode else 'kernel_owned',
-                  correctness_scope=('Independent proper partial sign-mask eight-lane i64 oracle, fully accessible disjoint buffers; excludes masks0/255, inactive poison and ISPC integration.' if mixed else
-                                     'Independent all-on eight-lane i64 oracle with disjoint buffers; no mixed masks or ISPC integration.'),
+                  framing='mixed_common_frame_v1' if fixture == 'mixed-mask' else 'common_frame_v1' if body_mode else 'kernel_owned',
+                  correctness_scope=spec['scope'],
                   timing_unit='TSC reference ticks, not core cycles; wall nanoseconds also retained.',
                   limitation='Isolated out-of-line kernels/hypotheses are not proof of optimized ISPC caller behavior. No patch promotion.',
                   compiler_sha256=runner.sha256(compiler), screen_sha256=runner.sha256(Path(__file__)),
@@ -196,13 +213,13 @@ def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=DEFAULT_PAIRS
     try:
         # Compile tiny artifacts under the shared lock, never rebuild ISPC/CMake.
         with runner.host_access(exclusive=False):
-            harness_name = 'screen_mixed_kernel.cpp' if mixed else 'screen_kernel.cpp'
+            harness_name = spec['harness']
             harness = output / harness_name
             shutil.copyfile(Path(__file__).with_name(harness_name), harness)
             report['harness_sha256'] = runner.sha256(harness)
             frame = None
             if body_mode:
-                frame_name = 'screen_mixed_frame.S' if mixed else 'screen_frame.S'
+                frame_name = spec['frame']
                 frame_path = output / frame_name
                 shutil.copyfile(Path(__file__).with_name(frame_name), frame_path)
                 frame = frame_path.read_text()
@@ -215,14 +232,15 @@ def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=DEFAULT_PAIRS
                 shutil.copyfile(source, frozen)
                 report['sources'][label] = dict(original=str(source), sha256=runner.sha256(frozen))
                 if body_mode:
-                    body = (validate_mixed_body if mixed else validate_body)(frozen.read_text())
+                    body = spec['body'](frozen.read_text())
                     frozen = output / (label + '.S')
                     frozen.write_text(frame.replace('/* BODY_INSERTION_POINT */', body))
                     report['sources'][label]['expanded_sha256'] = runner.sha256(frozen)
                 library = output / (label + '.so')
                 if source.suffix != '.so':
                     command(label + '-build', [compiler, '-shared', '-fPIC', '-O2', '-std=c++17',
-                        '-mavx2', '-fno-vectorize', '-fno-slp-vectorize', '-Wl,-Bsymbolic', frozen, '-o', library])
+                        '-mavx2', *spec['build_flags'], '-fno-vectorize', '-fno-slp-vectorize', '-Wl,-Bsymbolic',
+                        frozen, '-o', library])
                 report['sources'][label]['binary_sha256'] = runner.sha256(library)
             command('harness-build', [compiler, '-O2', '-std=c++17', harness, '-ldl', '-o', output / 'screen-kernel'])
         report['build_seconds'] = time.monotonic() - started
@@ -257,7 +275,7 @@ def main():
     parser.add_argument('--noise-threshold', type=float, default=NOISE_FLOOR,
                         help='relative effect the CI must clear (bench_adapter derives it from its A/A run)')
     parser.add_argument('--body-mode', action='store_true', help='wrap .inc primitives in one immutable loop/output frame')
-    parser.add_argument('--fixture', choices=('all-on', 'mixed-mask'), default='all-on')
+    parser.add_argument('--fixture', choices=tuple(FIXTURES), default='all-on')
     args = parser.parse_args()
     report = screen(args.baseline, args.candidate, args.cxx, args.output, args.cpu, args.groups, args.pairs,
                     args.batch_ms, args.body_mode, args.fixture, args.reps, args.noise_threshold)
