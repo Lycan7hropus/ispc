@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "name": "popcnt_i64_avx2_v1",
+  "target": "avx2-i32x8",
+  "allowed_paths": [
+    "builtins/target-avx2-i32x8.ll",
+    "tests/lit-tests/3615.ispc"
+  ],
+  "sources": {
+    "config.h": "50ab3d13f2417cdd66e0d16d906e8a6138fe6ff5b170ee9c1fa5ec7a07837e99",
+    "contexts.cpp": "a0ba5bb090ed900f16dcff4c1bd68c7ba65e87ff07329c01507823ae94b6a760",
+    "contexts.ispc": "3d4b66f71a34773a997d4571bcc7d77c7e8080c3136e57a4bea24d0e61239c68",
+    "oracle.cpp": "0c22134570297cde13822361d2c17c7b3d148fdee03015dadea03c1dd082d875",
+    "oracle.ispc": "b3f33d4175cd3b8426a28932260a59abb44c8ae31812d6f694b4eb4d35b05545"
+  },
+  "cases": [
+    "official_all/min_time:0.100",
+    "official_even/min_time:0.100",
+    "stream_all/min_time:0.100",
+    "stream_even/min_time:0.100",
+    "stream_mask_even/min_time:0.100",
+    "stream_mask_random/min_time:0.100",
+    "stream_mask_sparse/min_time:0.100",
+    "reduce_all/min_time:0.100",
+    "chain_all/min_time:0.100",
+    "chain_even/min_time:0.100",
+    "control_int32/min_time:0.100",
+    "control_uniform_int64/min_time:0.100"
+  ],
+  "discovery_cases": [
+    "official_all/min_time:0.100",
+    "official_even/min_time:0.100",
+    "stream_all/min_time:0.100",
+    "stream_even/min_time:0.100",
+    "stream_mask_even/min_time:0.100",
+    "stream_mask_random/min_time:0.100",
+    "stream_mask_sparse/min_time:0.100",
+    "reduce_all/min_time:0.100",
+    "chain_all/min_time:0.100",
+    "chain_even/min_time:0.100",
+    "control_int32/min_time:0.100",
+    "control_uniform_int64/min_time:0.100"
+  ],
+  "functional_globs": [
+    "popcnt*.ispc"
+  ],
+  "benchmark_header": "popcnt_contexts_ispc.h",
+  "oracle_header": "popcnt_oracle_ispc.h"
+}

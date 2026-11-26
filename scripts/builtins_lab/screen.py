@@ -151,6 +151,13 @@ FIXTURES = {
                        body_mode={False}, cpu_flags={'avx2', 'rdtscp', 'popcnt'}, build_flags=('-mpopcnt',),
                        scope='Independent bitwise all-on eight-lane i64 -> i32 popcnt oracle (every lane x bit, every count 0..64, '
                              'nibble/byte boundary patterns) with guarded disjoint buffers; no masks or ISPC integration.'),
+    'popcnt-i64-masks': dict(name='popcnt_i64_masks_v1', harness='screen_popcnt_masks_kernel.cpp', frame=None,
+                             body=None, body_mode={False}, cpu_flags={'avx2', 'rdtscp', 'popcnt'},
+                             build_flags=('-mpopcnt',), cases=9,
+                             scope='Independent bit-loop oracle for eight-lane popcnt(int64) -> int32 under ISPC masks: '
+                                   'runtime masks (all 256 lane masks; all-on/even/odd/sparse/random/off timed), '
+                                   'compile-time even mask, dependent chain; inactive lanes must be 0; mask lanes are '
+                                   '0/-1 (ISPC avx2 representation). No ISPC integration.'),
 }
 
 
@@ -174,8 +181,8 @@ def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=DEFAULT_PAIRS
         raise ValueError('groups 1..65536, pairs 3..4000, batch-ms 0.02..50, reps 1..101 required')
     if not NOISE_FLOOR <= noise_threshold < 0.5:
         raise ValueError(f'noise threshold must be in [{NOISE_FLOOR}, 0.5)')
-    # Timing budget: 3 cases x pairs x reps x 2 sides x batch; slower candidates take longer.
-    planned_seconds = 3 * pairs * reps * 2 * batch_ms / 1000
+    # Timing budget: cases x pairs x reps x 2 sides x batch; slower candidates take longer.
+    planned_seconds = spec.get('cases', 3) * pairs * reps * 2 * batch_ms / 1000
     compiler = Path(shutil.which(str(cxx)) or str(cxx)).absolute()
     if not compiler.is_file():
         raise ValueError('C++ compiler not found')
