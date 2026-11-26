@@ -89,9 +89,11 @@ def run_logged(argv, log):
 
 
 # ---------------------------------------------------------------- T0 ------
-def screen_once(baseline, candidate, out, fixture):
+def screen_once(baseline, candidate, out, fixture, noise_threshold=None):
     argv = [sys.executable, LAB / 'screen.py', '--baseline', baseline, '--candidate', candidate,
             '--cxx', LLVM / 'clang++', '--cpu', CPU, '--output', out, '--fixture', fixture]
+    if noise_threshold is not None:
+        argv += ['--noise-threshold', f'{noise_threshold:.6f}']
     if candidate.suffix == '.inc':
         argv.append('--body-mode')
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -101,6 +103,15 @@ def screen_once(baseline, candidate, out, fixture):
     if code and report.get('status') != 'failed':
         report['status'] = 'failed'
     return report
+
+
+def aa_noise_threshold(aa, floor):
+    """Largest distance from 1.0 that identical code reached in its A/A CI, never below the floor."""
+    excursion = 0.0
+    for case in aa.get('result', {}).get('cases', []):
+        low, high = case.get('ci95') or case['observed_ratio_range']
+        excursion = max(excursion, 1 - low, high - 1)
+    return min(0.49, max(floor, excursion))  # screen.py accepts thresholds below 0.5
 
 
 def t0_verdict(status):
@@ -127,6 +138,7 @@ def t0(task, task_dir, out_dir, result):
         raise ValueError('baseline and candidate must both be .inc bodies or both be kernels')
 
     correct, aa_ok = True, True
+    result.update(aa_cases=[], t0_seconds=[])
     for mask in task['masks']:
         fixture = 'all-on' if mask == 'all' else 'mixed-mask'
         if fixture == 'mixed-mask' and candidate.suffix != '.inc':
@@ -135,33 +147,48 @@ def t0(task, task_dir, out_dir, result):
         if fixture == 'mixed-mask':
             result['notes'].append(f"mask '{mask}': T0 mixed-mask fixture covers all proper partial masks 1..254, "
                                    'not only this pattern')
-        main = screen_once(baseline, candidate, out_dir / 'raw' / f't0-{tag}', fixture)
+        # A/A first: its CI tells how far identical code drifts in this run; the main verdict must clear it.
         aa = screen_once(baseline, baseline, out_dir / 'raw' / f'aa-{tag}', fixture)
+        aa_ok_run = aa.get('status') == 'screened_not_accepted'
+        floor = aa.get('estimator', {}).get('noise_floor', 0.01)
+        threshold = aa_noise_threshold(aa, floor) if aa_ok_run else None
+        main = screen_once(baseline, candidate, out_dir / 'raw' / f't0-{tag}', fixture, threshold)
+        result['t0_seconds'].append(dict(tag=tag, aa=aa.get('elapsed_seconds'), main=main.get('elapsed_seconds')))
         ok = main.get('status') == 'screened_not_accepted' and str(main['result'].get('oracle', '')).startswith('passed')
         correct &= ok
         if not ok:
             result['notes'].append(f"{tag}: screen failed: {main.get('error', 'see raw log')}")
             continue
+        result['t0_estimator'] = dict(pairs=main.get('pairs'), reps=main.get('reps'), batch_ms=main.get('batch_ms'),
+                                      **main.get('estimator', {}))
         for case in main['result']['cases']:
             pairs = case['pairs']
             base = statistics.median(p['baseline_ns_per_group'] for p in pairs)
             cand = statistics.median(p['candidate_ns_per_group'] for p in pairs)
+            point = case.get('trimmed_mean_ratio', case['median_ratio'])
             result['measurements'].append(dict(
                 case=f"{task['builtin']}/{tag}/{case['name']}", baseline_ns=base, candidate_ns=cand,
-                delta_pct=(case['median_ratio'] - 1) * 100, verdict=t0_verdict(case['screen_status']),
+                delta_pct=(point - 1) * 100, verdict=t0_verdict(case['screen_status']),
                 tsc_ratio_median=case['median_ratio'], tsc_ratio_range=case['observed_ratio_range'],
-                pairs=len(pairs)))
-        if aa.get('status') != 'screened_not_accepted':
+                trimmed_mean_ratio=case.get('trimmed_mean_ratio'), ci95=case.get('ci95'),
+                noise_threshold=case.get('noise_threshold'), pairs=len(pairs)))
+        if not aa_ok_run:
             aa_ok = False
             result['notes'].append(f'{tag}: A/A control run failed')
             continue
-        # A/A passes when the verdict rule does not call identical code faster/slower.
+        # A/A passes when the verdict rule (at the noise floor) does not call identical code faster/slower.
         for case in aa['result']['cases']:
             low, high = case['observed_ratio_range']
             verdict = t0_verdict(case['screen_status'])
             aa_ok &= verdict == 'inconclusive'
-            result['notes'].append(f"{tag}: A/A {case['name']} median {case['median_ratio']:.3f}, "
+            ci = case.get('ci95')
+            result['aa_cases'].append(dict(case=f"{task['builtin']}/{tag}/{case['name']}",
+                                           trimmed_mean_ratio=case.get('trimmed_mean_ratio'), ci95=ci,
+                                           median_ratio=case['median_ratio'], verdict=verdict))
+            ci_text = f", CI95 {ci[0]:.4f}..{ci[1]:.4f}" if ci else ''
+            result['notes'].append(f"{tag}: A/A {case['name']} median {case['median_ratio']:.3f}{ci_text}, "
                                    f"pair range {low:.3f}..{high:.3f} -> {verdict}")
+        result['notes'].append(f'{tag}: noise threshold {threshold * 100:.2f}% (A/A CI excursion, floor {floor * 100:.0f}%)')
     result['correct'] = correct
     result['aa_control'] = 'pass' if aa_ok and correct else 'fail'
     result['notes'].append('T0 is a standalone kernel screen; it never accepts a builtin patch.')

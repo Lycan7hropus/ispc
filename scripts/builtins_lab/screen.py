@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import random
 import re
 import shutil
 import statistics
@@ -16,14 +17,54 @@ import time
 import run as runner
 
 
-def classify(ratios, margin=0.05):
+# Estimator defaults: about 6 s of timing per case (3 cases, ~20 s per screen with build).
+DEFAULT_PAIRS = 300
+DEFAULT_REPS = 5
+DEFAULT_BATCH_MS = 2
+TRIM = 0.2
+BOOTSTRAP_RESAMPLES = 2000
+NOISE_FLOOR = 0.01  # never call a difference below 1%, whatever the A/A control says
+
+
+def trimmed_mean(values, trim=TRIM):
+    ordered = sorted(values)
+    cut = int(len(ordered) * trim)
+    kept = ordered[cut:len(ordered) - cut] or ordered
+    return sum(kept) / len(kept)
+
+
+def bootstrap_ci(values, trim=TRIM, resamples=BOOTSTRAP_RESAMPLES, seed=0x15bc):
+    """Percentile bootstrap 95% CI of the trimmed mean (pairs resampled with replacement)."""
+    rng = random.Random(seed)
+    estimates = sorted(trimmed_mean(rng.choices(values, k=len(values)), trim) for _ in range(resamples))
+    return [estimates[int(0.025 * resamples)], estimates[int(0.975 * resamples) - 1]]
+
+
+def check_ratios(ratios):
     if not ratios or any(not 0 < value < float('inf') for value in ratios):
         raise ValueError('invalid paired ratios')
-    if max(ratios) < 1 - margin:
+
+
+def classify(ci, threshold=NOISE_FLOOR):
+    """Call a direction only when the whole CI lies beyond the noise threshold."""
+    check_ratios(ci)
+    if not 0 <= threshold < 1:
+        raise ValueError('noise threshold must be in [0, 1)')
+    low, high = ci
+    if high < 1 - threshold:
         return 'promising_for_context_check'
-    if min(ratios) > 1 + margin:
+    if low > 1 + threshold:
         return 'slower_in_this_screen'
     return 'unclear'
+
+
+def summarize(ratios, threshold=NOISE_FLOOR):
+    """Per-pair candidate/baseline ratios -> robust point estimate, CI and verdict."""
+    check_ratios(ratios)
+    ci = bootstrap_ci(ratios)
+    return dict(median_ratio=statistics.median(ratios), trimmed_mean_ratio=trimmed_mean(ratios), ci95=ci,
+                observed_ratio_range=[min(ratios), max(ratios)], noise_threshold=threshold,
+                screen_status=classify(ci, threshold))
 
 
 BODY_OPS = {'vmovdqu', 'vmovdqa', 'vpbroadcastq', 'vpcmpeqq', 'vpand', 'vpxor',
@@ -95,8 +136,8 @@ def validate_mixed_body(body):
     return '\n'.join(lines) + '\n'
 
 
-def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=5, batch_ms=5, body_mode=False,
-           fixture='all-on'):
+def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=DEFAULT_PAIRS, batch_ms=DEFAULT_BATCH_MS,
+           body_mode=False, fixture='all-on', reps=DEFAULT_REPS, noise_threshold=NOISE_FLOOR):
 
     started = time.monotonic()
     if fixture not in ('all-on', 'mixed-mask') or (fixture == 'mixed-mask' and not body_mode):
@@ -109,8 +150,12 @@ def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=5, batch_ms=5
     flags = Path('/proc/cpuinfo').read_text().split('flags', 1)[-1].split('\n', 1)[0].split()
     if not {'avx2', 'rdtscp'} <= set(flags):
         raise ValueError('AVX2 and RDTSCP required by initial fixture')
-    if not 1 <= groups <= 65536 or not 3 <= pairs <= 31 or not 1 <= batch_ms <= 50:
-        raise ValueError('groups 1..65536, pairs 3..31, batch-ms 1..50 required')
+    if not 1 <= groups <= 65536 or not 3 <= pairs <= 4000 or not 1 <= batch_ms <= 50 or not 1 <= reps <= 31:
+        raise ValueError('groups 1..65536, pairs 3..4000, batch-ms 1..50, reps 1..31 required')
+    if not NOISE_FLOOR <= noise_threshold < 0.5:
+        raise ValueError(f'noise threshold must be in [{NOISE_FLOOR}, 0.5)')
+    # Timing budget: 3 cases x pairs x reps x 2 sides x batch; slower candidates take longer.
+    planned_seconds = 3 * pairs * reps * 2 * batch_ms / 1000
     compiler = Path(shutil.which(str(cxx)) or str(cxx)).absolute()
     if not compiler.is_file():
         raise ValueError('C++ compiler not found')
@@ -121,7 +166,13 @@ def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=5, batch_ms=5
     output = Path(output).absolute()
     output.mkdir(parents=True, exist_ok=False)
     report = dict(status='running', level='T0', fixture='reduce_equal_i64_proper_partial_v1' if mixed else 'reduce_equal_i64_all_on_v1',
-                  cpu=cpu, groups=groups, pairs=pairs, batch_ms=batch_ms,
+                  cpu=cpu, groups=groups, pairs=pairs, batch_ms=batch_ms, reps=reps,
+                  estimator=dict(pair_statistic='per-side minimum of reps interleaved batches, ratio candidate/baseline TSC',
+                                 summary=f'{int(TRIM * 100)}% trimmed mean of pair ratios',
+                                 ci=f'percentile bootstrap 95% ({BOOTSTRAP_RESAMPLES} resamples)',
+                                 verdict='direction only when the whole CI is beyond 1 +/- noise_threshold',
+                                 noise_floor=NOISE_FLOOR, planned_timing_seconds=planned_seconds),
+                  noise_threshold=noise_threshold,
                   framing='mixed_common_frame_v1' if mixed else 'common_frame_v1' if body_mode else 'kernel_owned',
                   correctness_scope=('Independent proper partial sign-mask eight-lane i64 oracle, fully accessible disjoint buffers; excludes masks0/255, inactive poison and ISPC integration.' if mixed else
                                      'Independent all-on eight-lane i64 oracle with disjoint buffers; no mixed masks or ISPC integration.'),
@@ -176,13 +227,12 @@ def screen(baseline, candidate, cxx, output, cpu, groups=32, pairs=5, batch_ms=5
         with runner.host_access(exclusive=True):
             measured = time.monotonic()
             command('measure', ['taskset', '--cpu-list', cpu, output / 'screen-kernel',
-                output / 'baseline.so', output / 'candidate.so', groups, pairs, batch_ms, 1 << 28], 30)
+                output / 'baseline.so', output / 'candidate.so', groups, pairs, batch_ms, 1 << 28, reps],
+                30 + 8 * planned_seconds)
             report['measurement_seconds'] = time.monotonic() - measured
         result = json.loads((output / 'measure.log').read_text())
         for case in result['cases']:
-            ratios = [row['ratio'] for row in case['pairs']]
-            case.update(median_ratio=statistics.median(ratios), observed_ratio_range=[min(ratios), max(ratios)],
-                        screen_status=classify(ratios))
+            case.update(summarize([row['ratio'] for row in case['pairs']], noise_threshold))
         report.update(status='screened_not_accepted', result=result)
     except Exception as error:
         report.update(status='failed', error=str(error))
@@ -199,15 +249,21 @@ def main():
     parser.add_argument('--cxx', default='clang++')
     parser.add_argument('--cpu', type=int, required=True)
     parser.add_argument('--groups', type=int, default=32)
-    parser.add_argument('--pairs', type=int, default=5)
-    parser.add_argument('--batch-ms', type=int, default=5)
+    parser.add_argument('--pairs', type=int, default=DEFAULT_PAIRS, help='interleaved A/B pairs per case')
+    parser.add_argument('--batch-ms', type=int, default=DEFAULT_BATCH_MS, help='target length of one timed batch')
+    parser.add_argument('--reps', type=int, default=DEFAULT_REPS, help='batches per side per pair; minimum kept')
+    parser.add_argument('--noise-threshold', type=float, default=NOISE_FLOOR,
+                        help='relative effect the CI must clear (bench_adapter derives it from its A/A run)')
     parser.add_argument('--body-mode', action='store_true', help='wrap .inc primitives in one immutable loop/output frame')
     parser.add_argument('--fixture', choices=('all-on', 'mixed-mask'), default='all-on')
     args = parser.parse_args()
-    report = screen(args.baseline, args.candidate, args.cxx, args.output, args.cpu, args.groups, args.pairs, args.batch_ms, args.body_mode, args.fixture)
+    report = screen(args.baseline, args.candidate, args.cxx, args.output, args.cpu, args.groups, args.pairs,
+                    args.batch_ms, args.body_mode, args.fixture, args.reps, args.noise_threshold)
     print(json.dumps({key: report[key] for key in ('status', 'elapsed_seconds', 'build_seconds', 'measurement_seconds')}, indent=2))
     for case in report['result']['cases']:
-        print(case['name'], case['screen_status'], round(case['median_ratio'], 4))
+        low, high = case['ci95']
+        print(case['name'], case['screen_status'], f"trimmed mean {case['trimmed_mean_ratio']:.4f}",
+              f"CI95 {low:.4f}..{high:.4f}", f"median {case['median_ratio']:.4f}")
 
 
 if __name__ == '__main__':

@@ -4,25 +4,60 @@ import json
 import os
 from pathlib import Path
 import platform
+import random
 import shutil
 import subprocess
 import tempfile
 import unittest
 
+import bench_adapter
 import screen
 
 
 class DecisionTests(unittest.TestCase):
-    def test_screen_is_conservative_and_not_a_confidence_interval(self):
-        self.assertEqual(screen.classify([0.7, 0.8, 0.9]), 'promising_for_context_check')
-        self.assertEqual(screen.classify([1.2, 1.3, 1.1]), 'slower_in_this_screen')
-        self.assertEqual(screen.classify([0.7, 1.02, 0.9]), 'unclear')
-        self.assertEqual(screen.classify([0.99, 1, 1.01]), 'unclear')
+    def test_verdict_needs_whole_ci_beyond_threshold(self):
+        self.assertEqual(screen.classify([0.95, 0.97]), 'promising_for_context_check')
+        self.assertEqual(screen.classify([1.02, 1.04]), 'slower_in_this_screen')
+        self.assertEqual(screen.classify([0.97, 1.001]), 'unclear')
+        self.assertEqual(screen.classify([0.995, 1.005]), 'unclear')
+        # The CI clears 1% but not an A/A-derived 3% threshold.
+        self.assertEqual(screen.classify([1.015, 1.025], 0.01), 'slower_in_this_screen')
+        self.assertEqual(screen.classify([1.015, 1.025], 0.03), 'unclear')
 
     def test_nonfinite_or_nonpositive_measurements_are_rejected(self):
         for value in (0, -1, float('inf'), float('nan')):
             with self.assertRaises(ValueError):
-                screen.classify([value])
+                screen.classify([value, 1.0])
+            with self.assertRaises(ValueError):
+                screen.summarize([1.0, value, 1.0])
+
+    def test_trimmed_mean_ignores_disturbed_pairs(self):
+        clean = [1.0 + 0.001 * (i % 5 - 2) for i in range(100)]
+        disturbed = clean[:90] + [1.5] * 5 + [0.6] * 5
+        self.assertAlmostEqual(screen.trimmed_mean(clean), 1.0, places=6)
+        self.assertAlmostEqual(screen.trimmed_mean(disturbed), 1.0, delta=0.002)
+        self.assertEqual(screen.trimmed_mean([2.0]), 2.0)
+
+    def test_summary_detects_small_shift_and_stays_unclear_for_identity(self):
+        rng = random.Random(7)
+        same = [rng.gauss(1.0, 0.01) for _ in range(300)]
+        slower = [value * 1.02 for value in same]
+        identity = screen.summarize(same)
+        self.assertEqual(identity['screen_status'], 'unclear')
+        low, high = identity['ci95']
+        self.assertTrue(low < identity['trimmed_mean_ratio'] < high)
+        self.assertLess(high - low, 0.005)
+        self.assertEqual(screen.summarize(slower)['screen_status'], 'slower_in_this_screen')
+        self.assertEqual(screen.summarize([1 / v for v in slower])['screen_status'], 'promising_for_context_check')
+        for key in ('median_ratio', 'observed_ratio_range', 'trimmed_mean_ratio', 'ci95', 'noise_threshold'):
+            self.assertIn(key, identity)
+        self.assertEqual(screen.summarize(same), identity)  # seeded bootstrap is reproducible
+
+    def test_bench_threshold_follows_aa_noise_with_floor(self):
+        quiet = dict(result=dict(cases=[dict(ci95=[0.998, 1.003]), dict(ci95=[0.999, 1.001])]))
+        noisy = dict(result=dict(cases=[dict(ci95=[0.97, 1.004]), dict(ci95=[0.99, 1.012])]))
+        self.assertEqual(bench_adapter.aa_noise_threshold(quiet, 0.01), 0.01)
+        self.assertAlmostEqual(bench_adapter.aa_noise_threshold(noisy, 0.01), 0.03)
 
 
 @unittest.skipUnless(platform.machine() == 'x86_64' and Path('/proc/cpuinfo').exists(), 'Linux x86 fixture')
@@ -65,7 +100,7 @@ extern "C" void lab_kernel(const uint64_t *in, uint64_t *v, uint64_t *f, size_t 
 
     def run_screen(self, candidate, destination):
         return screen.screen(self.good,candidate,self.cxx,destination,min(os.sched_getaffinity(0)),
-                             groups=3,pairs=3,batch_ms=1)
+                             groups=3,pairs=3,batch_ms=1,reps=2)
 
     def test_identity_screen_retains_inputs_and_never_accepts_patch(self):
         out = self.root/'identity'
@@ -76,6 +111,11 @@ extern "C" void lab_kernel(const uint64_t *in, uint64_t *v, uint64_t *f, size_t 
         self.assertEqual(report['result']['oracle'],'passed_all_on_fixture_only')
         self.assertEqual((out/'baseline.so').read_bytes(),self.good.read_bytes())
         self.assertEqual(len(report['result']['cases'][0]['pairs']),3)
+        case = report['result']['cases'][0]
+        self.assertEqual(case['reps'], 2)
+        self.assertEqual(case['noise_threshold'], screen.NOISE_FLOOR)
+        self.assertLessEqual(case['ci95'][0], case['ci95'][1])
+        self.assertIn(case['screen_status'], ('unclear', 'promising_for_context_check', 'slower_in_this_screen'))
 
     def test_bad_kernel_stops_before_timing_results_and_retains_failure(self):
         out = self.root/'bad-output'
