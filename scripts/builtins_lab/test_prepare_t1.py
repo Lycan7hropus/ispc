@@ -294,7 +294,10 @@ class PreparationTests(unittest.TestCase):
         t.compile_candidate=mock.Mock(side_effect=lambda:self.events.append('compile'))
         t.fixtures=mock.Mock(side_effect=lambda *args:self.events.append('fixtures'))
         t.packet_command=mock.Mock(return_value=['compile-only-command'])
-        t.stage=mock.Mock(side_effect=lambda label,*a,**kw:self.events.append(label))
+        def stage(label,*a,**kw):
+            self.events.append(label)
+            if label.endswith('-lit'):(t.out/f'{label}.log').write_text('Total Discovered Tests: 1\n  Passed: 1\n')
+        t.stage=mock.Mock(side_effect=stage)
         evaluate.Evaluation.build_candidate(t)
         self.assertEqual(self.events,['compile','fixtures','candidate-vnni-compile','candidate-lit','candidate-functional'])
         self.assertTrue(t.packet_command.call_args.args[-1])

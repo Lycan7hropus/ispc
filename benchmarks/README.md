@@ -543,6 +543,33 @@ costs time outside this run. Record that cost separately. T2 and fresh confirmat
 remain necessary for a production decision; this runner never rewrites old T2
 results or automatically promotes a candidate.
 
+### Paired T1 timing protocol (`"protocol": "paired"`)
+
+With a fixture packet, an `evaluate.py` policy may add `"protocol": "paired"`,
+`"pairs"` (20..400) and `"layout_pad"` (bytes, not a multiple of 64). Timing then
+uses `paired.py` instead of `run.py`; builds, oracles, lit and functional gates are
+unchanged. `bench_adapter.py` uses it for T1 with 80 pairs, 48 bytes, 0.97/1.03.
+All of this is frozen before timing:
+
+- One pair is one first-binary and one second-binary process, back to back, in
+  AB/BA order alternating between pairs; each process runs every frozen case once.
+  Per case: 20% trimmed mean of per-pair cpu_time ratios, seeded bootstrap CI95.
+- A/A gate: baseline vs baseline. Every case's CI must lie inside
+  [1 - min_gain, 1 + max_regression], otherwise `aa_gate_failed` and no A/B.
+- Layout control (not a gate, not tuning): baseline vs the same objects relinked
+  with `layout_pad` bytes before the ISPC object. The evaluator verifies that all
+  ISPC symbols moved by one offset off their 64-byte phase and the inventory holds.
+- Per-case threshold = max(bound, A/A excursion, layout excursion), where an
+  excursion is the largest distance of a CI bound from 1.
+- A/B: `improvement` if CI_high < 1 - threshold, `regression` if CI_low > 1 +
+  threshold, else inconclusive. Any non-control regression wins, then any moved
+  `control_*` case (`control_moved`), then improvement (`candidate_for_confirmation`).
+- Confirmation is a fresh A/B with discovery's frozen thresholds.
+
+Lit gates accept failures that the cached baseline already had (recorded in
+`baseline.json` and `evaluation.json`); the candidate may add none, and a lit run
+without its summary is an error.
+
 ### Preparing a candidate for T1 without full T2
 
 `prepare_t1.py` accepts the same trusted policy, two-field worker request and
