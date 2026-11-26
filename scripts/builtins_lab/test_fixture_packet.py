@@ -65,6 +65,13 @@ class PacketTests(unittest.TestCase):
         self.save()
         with self.assertRaises(ValueError):
             fixture_packet.load(self.path)
+        self.manifest['allowed_paths'] = ['tests/func-tests/popcnt-1.ispc']
+        self.save()
+        with self.assertRaisesRegex(ValueError, 'builtin source'):
+            fixture_packet.load(self.path)
+        self.manifest['allowed_paths'] = ['builtins/util.m4', 'tests/lit-tests/3615.ispc']
+        self.save()
+        fixture_packet.load(self.path)
         self.manifest['allowed_paths'] = ['builtins/util.m4']
         self.save()
         link = self.root / 'oracle.cpp'
