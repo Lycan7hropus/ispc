@@ -53,7 +53,10 @@ T1_PACKETS = {
 }
 EVAL_TYPES = {'int16', 'int64', 'double'}
 TIER_POLICY = {
-    'T1': dict(runs=3, repetitions=2, min_gain=0.03, max_regression=0.03),
+    # T1 timing: paired.py (A/A gate, 48-byte layout control, 80 AB/BA process pairs, CI vs 0.97/1.03).
+    # runs/repetitions stay for policy validation and are unused by the paired protocol.
+    'T1': dict(runs=3, repetitions=2, min_gain=0.03, max_regression=0.03, protocol='paired', pairs=80,
+               layout_pad=48),
     'full': dict(runs=5, repetitions=5, min_gain=0.02, max_regression=0.02),
 }
 
@@ -240,6 +243,9 @@ def evaluate_tier(task, task_dir, out_dir, result):
     if packet is not None:
         policy.update(packet=str(packet), packet_sha256=hashlib.sha256(packet.read_bytes()).hexdigest())
         result['notes'].append(f"T1 fixture packet {packet.relative_to(REPO)} (sha256 {policy['packet_sha256'][:12]})")
+    elif policy.get('protocol') == 'paired':
+        for key in ('protocol', 'pairs', 'layout_pad'):  # paired timing needs a packet; shuffle keeps run.py
+            policy.pop(key)
     raw = out_dir / 'raw'
     raw.mkdir(parents=True, exist_ok=True)
     request = dict(hypothesis=task.get('notes') or f"{task['builtin']} candidate from {task_dir.name}",
@@ -264,10 +270,30 @@ def evaluate_tier(task, task_dir, out_dir, result):
         for row in measured.get('cases', []):
             base = statistics.median(row['baseline_seconds']) * 1e9
             cand = statistics.median(row['candidate_seconds']) * 1e9
+            point = row.get('trimmed_mean_ratio', cand / base)
             result['measurements'].append(dict(
-                case=row['name'], baseline_ns=base, candidate_ns=cand, delta_pct=(cand / base - 1) * 100,
+                case=row['name'], baseline_ns=base, candidate_ns=cand, delta_pct=(point - 1) * 100,
                 verdict=verdicts.get(row['status'], 'inconclusive'), framework_status=row['status'],
-                ratio_range=row['observed_ratio_range']))
+                ratio_range=row['observed_ratio_range'],
+                **{key: row[key] for key in ('trimmed_mean_ratio', 'ci95', 'threshold', 'control', 'pairs')
+                   if key in row}))
+    if policy.get('protocol') == 'paired':
+        discovery = report.get('discovery')
+        gate = json.loads(Path(discovery['report']).read_text()) if discovery else {}
+        if 'aa_gate' in gate:
+            result['aa_control'] = 'pass' if gate['aa_gate']['passed'] else 'fail'
+            result['aa_gate'] = gate['aa_gate']
+            result['aa_cases'] = [dict(case=case, arm=arm, trimmed_mean_ratio=s['trimmed_mean_ratio'], ci95=s['ci95'])
+                                  for arm in ('aa', 'layout') for case, s in sorted(gate.get(f'{arm}_arm', {}).items())]
+            result['layout_control'] = report.get('layout_control')
+        else:
+            result['aa_control'] = 'fail'
+            result['notes'].append('no timing phase ran; A/A gate not executed')
+        result['notes'].append(f"evaluate.py status: {status} (tier {task['tier']}: paired protocol, "
+                               f"{policy['pairs']} pairs, layout pad {policy['layout_pad']} B, "
+                               f"bounds {1 - policy['min_gain']:.2f}/{1 + policy['max_regression']:.2f})")
+        return
+    if phase:
         result['aa_control'] = aa_control_eval(report, policy, raw)
     else:
         result['aa_control'] = 'fail'

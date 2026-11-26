@@ -22,12 +22,23 @@ import sys
 
 import run as runner
 import fixture_packet
+import paired
 
 ALLOWED = ('builtins/target-avx2-i32x8.ll',)
-TOOLS = ('run.py', 'validate_shuffle.py', 'build_shuffle_bench.py', 'evaluate.py', 'fixture_packet.py')
+TOOLS = ('run.py', 'validate_shuffle.py', 'build_shuffle_bench.py', 'evaluate.py', 'fixture_packet.py',
+         'paired.py', 'screen.py')
 POLICY_KEYS = {'repo', 'baseline_revision', 'llvm', 'cache', 'type', 'cpu',
                'runs', 'repetitions', 'min_gain', 'max_regression', 'jobs', 'timeout',
-               'packet', 'packet_sha256'}
+               'packet', 'packet_sha256', 'protocol', 'pairs', 'layout_pad'}
+LIT_RESULT = re.compile(r'^(FAIL|XPASS|TIMEOUT|UNRESOLVED): ispc :: (\S+)', re.MULTILINE)
+
+
+def lit_failures(log):
+    """Failing lit test names from a completed check-all log; an incomplete run is an error."""
+    text = Path(log).read_text(errors='replace')
+    if 'Total Discovered Tests:' not in text:
+        raise ValueError(f'lit did not complete: {log}')
+    return sorted({match.group(2) for match in LIT_RESULT.finditer(text)})
 
 
 def fingerprint(value):
@@ -77,6 +88,16 @@ def validate_policy(policy):
         value = policy.get(key)
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value < 1:
             raise ValueError(f'{key} must be between zero and one')
+    if {'protocol', 'pairs', 'layout_pad'} & set(policy):
+        if policy.get('protocol') != 'paired':
+            raise ValueError("protocol must be 'paired' (or omitted for run.py)")
+        if 'packet' not in policy:
+            raise ValueError('paired protocol requires a fixture packet')
+        if type(policy.get('pairs')) is not int or not 20 <= policy['pairs'] <= 400:
+            raise ValueError('pairs must be an integer in 20..400')
+        pad = policy.get('layout_pad')
+        if type(pad) is not int or not 1 <= pad <= 4096 or pad % 64 == 0:
+            raise ValueError('layout_pad must be 1..4096 bytes and not a multiple of 64')
 
 
 def validate_request(request):
@@ -226,6 +247,20 @@ class Evaluation:
         runner.execute(record['argv'], self.out / f'{label}.log',
                        timeout or self.policy['timeout'], cwd=cwd or self.source, env=env)
 
+    def stage_lit(self, label):
+        """check-all that may fail only by listed lit tests; returns their sorted names."""
+        try:
+            self.stage(label, ['cmake', '--build', self.build, '--target', 'check-all',
+                               '-j', str(self.policy['jobs'])])
+            failed = False
+        except subprocess.CalledProcessError:
+            failed = True
+        failures = lit_failures(self.out / f'{label}.log')
+        if failed and not failures:
+            raise ValueError(f'{label} failed without failing lit tests; see {label}.log')
+        self.report.setdefault('lit_failures', {})[label] = failures
+        return failures
+
     def save(self):
         self.report['build_environment'] = {'CPATH': '/usr/include/x86_64-linux-gnu'}
         (self.out / 'evaluation.json').write_text(json.dumps(self.report, indent=2) + '\n')
@@ -264,10 +299,10 @@ class Evaluation:
                                  *self.configure_flags])
         self.stage('baseline-build', ['cmake', '--build', self.build, '--target', 'ispc', 'benchmark',
                                       '-j', str(self.policy['jobs'])])
-        self.stage('baseline-lit', ['cmake', '--build', self.build, '--target', 'check-all',
-                                    '-j', str(self.policy['jobs'])])
+        # Pre-existing baseline lit failures are recorded, not fatal; the candidate may add none.
+        baseline_failures = self.stage_lit('baseline-lit')
         shutil.copy2(self.build / 'bin/ispc', self.home / 'baseline-ispc')
-        metadata = dict(ispc_sha256=runner.sha256(self.home / 'baseline-ispc'),
+        metadata = dict(ispc_sha256=runner.sha256(self.home / 'baseline-ispc'), lit_failures=baseline_failures,
                         cmake_cache_sha256=runner.sha256(self.build / 'CMakeCache.txt'),
                         submodules=self.git('submodule', 'status'), prepared_in=str(self.out),
                         lit_log_sha256=runner.sha256(self.out / 'baseline-lit.log'))
@@ -348,8 +383,10 @@ class Evaluation:
         for name in ('contexts.ispc', 'contexts.cpp'):
             if runner.sha256(self.out / 'baseline-contexts' / name) != runner.sha256(self.out / 'candidate-contexts' / name):
                 raise ValueError('baseline and candidate harness sources differ')
-        self.stage('candidate-lit', ['cmake', '--build', self.build, '--target', 'check-all',
-                                    '-j', str(self.policy['jobs'])])
+        known = self.report.get('baseline', {}).get('lit_failures', [])
+        new_failures = sorted(set(self.stage_lit('candidate-lit')) - set(known))
+        if new_failures:
+            raise ValueError('candidate introduces lit failures: ' + ', '.join(new_failures))
         patterns = self.packet['manifest']['functional_globs'] if self.packet else ['shuffle*.ispc']
         tests = sorted({path for pattern in patterns for path in self.source.glob('tests/func-tests/' + pattern)})
         if not tests:
@@ -373,13 +410,73 @@ class Evaluation:
                    timeout=self.policy['timeout'], expected_cases=cases,
                    filter=case_filter(cases),
                    checks=[[str(self.oracle_binary(name))] for name in ('baseline', 'candidate')])
+        paired_protocol = self.policy.get('protocol') == 'paired'
+        if paired_protocol:
+            for key in ('runs', 'repetitions'):
+                job.pop(key)
+            job.update(pairs=self.policy['pairs'],
+                       control_cases=[case for case in cases if case.startswith('control_')])
+            if not confirmation:
+                job['layout_baseline'] = str(self.layout_binary())
         (self.out / f'{label}-job.json').write_text(json.dumps(job, indent=2) + '\n')
         directory = self.out / label
         directory.mkdir()
-        result = runner.experiment(job, directory)
+        if paired_protocol:
+            result = paired.experiment(job, directory, self.report.get('frozen_thresholds') if confirmation else None)
+            if not confirmation and 'thresholds' in result:
+                self.report['frozen_thresholds'] = result['thresholds']
+        else:
+            result = runner.experiment(job, directory)
         self.report[label] = dict(status=result['status'], report=str(directory / 'report.json'))
         self.save()
         return result['status']
+
+    def layout_binary(self):
+        """Baseline contexts relinked with layout_pad bytes in front of the ISPC object."""
+        fixture = json.loads((self.out / 'baseline-validation/fixture.json').read_text())
+        links = [command['argv'] for command in fixture['commands'] if command['label'] == 'contexts-link']
+        if len(links) != 1:
+            raise ValueError('cannot find the baseline contexts link command')
+        argv, contexts = list(links[0]), self.out / 'baseline-contexts'
+        directory = self.out / 'baseline-layout'
+        directory.mkdir()
+        pad = directory / 'layout_pad.S'
+        pad.write_text('    .text\n    .globl lab_layout_pad\n    .type lab_layout_pad, @function\n'
+                       f"lab_layout_pad:\n    .fill {self.policy['layout_pad']}, 1, 0xcc\n"
+                       '    .size lab_layout_pad, .-lab_layout_pad\n    .section .note.GNU-stack,"",@progbits\n')
+        self.stage('baseline-layout-pad', [self.llvm / 'clang++', '-c', pad, '-o', directory / 'layout_pad.o'],
+                   cwd=directory)
+        ispc_object = str(contexts / 'contexts.o')
+        if argv.count(ispc_object) != 1 or argv.count('-o') != 1:
+            raise ValueError('unexpected baseline contexts link command')
+        argv.insert(argv.index(ispc_object), str(directory / 'layout_pad.o'))
+        binary = directory / self.benchmark_binary('baseline').name
+        argv[argv.index('-o') + 1] = str(binary)
+        self.stage('baseline-layout-link', argv, cwd=directory)
+        # The ISPC code must actually move off its 64-byte phase, with identical instructions.
+        nm = self.llvm / 'llvm-nm'
+        symbols = [line.split()[-1] for line in subprocess.check_output(
+            [str(nm), '--defined-only', ispc_object], text=True).splitlines() if line.split()[1:2] == ['T']]
+
+        def addresses(path):
+            table = {}
+            for line in subprocess.check_output([str(nm), '--defined-only', str(path)], text=True).splitlines():
+                parts = line.split()
+                if len(parts) == 3:
+                    table[parts[2]] = int(parts[0], 16)
+            return table
+
+        original, shifted = addresses(self.benchmark_binary('baseline')), addresses(binary)
+        deltas = {name: shifted[name] - original[name] for name in symbols if name in original and name in shifted}
+        if not deltas or len(set(deltas.values())) != 1 or next(iter(deltas.values())) % 64 == 0:
+            raise ValueError(f'layout padding did not shift the ISPC code off its 64-byte phase: {deltas}')
+        self.stage('baseline-layout-inventory', [binary, '--benchmark_list_tests=true',
+                                                 '--benchmark_filter=' + case_filter(self.cases())], cwd=directory)
+        if sorted((self.out / 'baseline-layout-inventory.log').read_text().splitlines()) != self.cases():
+            raise ValueError('layout baseline inventory differs')
+        self.report['layout_control'] = dict(pad_bytes=self.policy['layout_pad'], ispc_code_shift=next(iter(deltas.values())),
+                                             symbols=len(deltas), binary_sha256=runner.sha256(binary))
+        return binary
 
     def evaluate(self):
         try:
