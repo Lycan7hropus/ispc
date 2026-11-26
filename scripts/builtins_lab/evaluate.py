@@ -31,14 +31,22 @@ POLICY_KEYS = {'repo', 'baseline_revision', 'llvm', 'cache', 'type', 'cpu',
                'runs', 'repetitions', 'min_gain', 'max_regression', 'jobs', 'timeout',
                'packet', 'packet_sha256', 'protocol', 'pairs', 'layout_pad'}
 LIT_RESULT = re.compile(r'^(FAIL|XPASS|TIMEOUT|UNRESOLVED): ispc :: (\S+)', re.MULTILINE)
+# utils/lit prints 'Testing Time:' and then one count per non-empty status once every test has run.
+LIT_DONE = re.compile(r'^Testing Time: ', re.MULTILINE)
+LIT_BAD_COUNT = re.compile(r'^  (Failed|Timed Out|Unexpectedly Passed|Unresolved)\s*:\s*(\d+)\s*$', re.MULTILINE)
 
 
 def lit_failures(log):
     """Failing lit test names from a completed check-all log; an incomplete run is an error."""
     text = Path(log).read_text(errors='replace')
-    if 'Total Discovered Tests:' not in text:
+    done = list(LIT_DONE.finditer(text))
+    if not done:
         raise ValueError(f'lit did not complete: {log}')
-    return sorted({match.group(2) for match in LIT_RESULT.finditer(text)})
+    names = sorted({match.group(2) for match in LIT_RESULT.finditer(text)})
+    counted = sum(int(match.group(2)) for match in LIT_BAD_COUNT.finditer(text, done[-1].end()))
+    if counted != len(names):
+        raise ValueError(f'lit summary counts {counted} failing tests but {len(names)} are listed: {log}')
+    return names
 
 
 def fingerprint(value):

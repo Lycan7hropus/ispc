@@ -153,10 +153,18 @@ class EvaluatorProtocolTests(unittest.TestCase):
     def test_lit_failures_require_a_completed_summary(self):
         with tempfile.TemporaryDirectory() as root:
             log = Path(root) / 'lit.log'
-            log.write_text('XFAIL: ispc :: a.ispc (1 of 3)\nFAIL: ispc :: 2334_unroll.ispc (2 of 3)\n'
-                           'TIMEOUT: ispc :: slow.ispc (3 of 3)\nTotal Discovered Tests: 3\n  Failed: 2\n')
+            # Shape of the bundled utils/lit check-all output (bench run 45878927542, baseline-lit.log).
+            body = ('XFAIL: ispc :: a.ispc (1 of 4)\nFAIL: ispc :: 2334_unroll.ispc (2 of 4)\n'
+                    'PASS: ispc :: b.ispc (3 of 4)\nTIMEOUT: ispc :: slow.ispc (4 of 4)\n'
+                    '********************\nFailed Tests (1):\n  ispc :: 2334_unroll.ispc\n\n\n')
+            log.write_text(body + 'Testing Time: 69.90s\n  Passed           :   1\n  Expectedly Failed:   1\n'
+                           '  Timed Out        :   1\n  Failed           :   1\n'
+                           'ninja: build stopped: subcommand failed.\n')
             self.assertEqual(evaluate.lit_failures(log), ['2334_unroll.ispc', 'slow.ispc'])
-            log.write_text('FAIL: ispc :: 2334_unroll.ispc (2 of 3)\n')
+            log.write_text(body + 'Testing Time: 1.00s\n  Failed           :   3\n')
+            with self.assertRaisesRegex(ValueError, 'counts 3 failing tests but 2'):
+                evaluate.lit_failures(log)
+            log.write_text(body)
             with self.assertRaisesRegex(ValueError, 'did not complete'):
                 evaluate.lit_failures(log)
 
