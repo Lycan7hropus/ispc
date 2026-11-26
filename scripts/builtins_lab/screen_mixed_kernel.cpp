@@ -136,12 +136,15 @@ Sample measure(Fixture &fixture, Kernel kernel, size_t repeats) {
 
 int main(int argc, char **argv) {
     try {
-        if (argc != 7)
-            throw std::runtime_error("baseline.so candidate.so groups pairs batch_ms max_repeats required");
+        if (argc != 7 && argc != 8)
+            throw std::runtime_error("baseline.so candidate.so groups pairs batch_ms max_repeats [reps] required");
         Library baseline(argv[1]), candidate(argv[2]);
         size_t groups = std::stoull(argv[3]), pairs = std::stoull(argv[4]);
         double targetNs = std::stod(argv[5]) * 1e6;
         size_t maxRepeats = std::stoull(argv[6]);
+        size_t reps = argc == 8 ? std::stoull(argv[7]) : 1;
+        if (!pairs || !reps || !(targetNs > 0))
+            throw std::runtime_error("pairs, reps and batch_ms must be positive");
         for (size_t count : {size_t(0), size_t(1), size_t(3), groups})
             for (int pattern = 0; pattern < 3; ++pattern) {
                 Fixture check(count, pattern);
@@ -173,15 +176,25 @@ int main(int argc, char **argv) {
                   << ",\"cases\":[";
         for (int pattern = 0; pattern < 3; ++pattern) {
             Fixture fixture(groups, pattern);
+            // Calibrate by doubling, then rescale so the faster side takes about batch_ms.
             size_t repeats = 1;
             while (true) {
                 auto b = measure(fixture, baseline.kernel, repeats);
                 auto c = measure(fixture, candidate.kernel, repeats);
-                if (std::min(b.ns, c.ns) >= targetNs)
+                double fastest = std::min(b.ns, c.ns);
+                if (fastest >= targetNs / 4) {
+                    double scaled = double(repeats) * targetNs / fastest;
+                    repeats = std::max<size_t>(1, std::min<size_t>(maxRepeats, size_t(scaled + 0.5)));
                     break;
+                }
                 if (repeats > maxRepeats / 2)
                     throw std::runtime_error("batch calibration exceeded repetition cap");
                 repeats *= 2;
+            }
+            // Discarded warm-up so the first timed pairs do not see cold caches or a ramping clock.
+            for (int warm = 0; warm < 8; ++warm) {
+                measure(fixture, baseline.kernel, repeats);
+                measure(fixture, candidate.kernel, repeats);
             }
             if (pattern)
                 std::cout << ',';
@@ -189,24 +202,45 @@ int main(int argc, char **argv) {
                       << (pattern == 0   ? "equal"
                           : pattern == 1 ? "early_diff"
                                          : "late_diff")
-                      << "\",\"groups\":" << groups << ",\"repeats\":" << repeats << ",\"pairs\":[";
+                      << "\",\"groups\":" << groups << ",\"repeats\":" << repeats << ",\"reps\":" << reps
+                      << ",\"pairs\":[";
+            std::vector<double> ratios(reps), baseTicks(reps), candTicks(reps), baseNs(reps), candNs(reps);
+            auto median = [](std::vector<double> values) {
+                auto middle = values.begin() + values.size() / 2;
+                std::nth_element(values.begin(), middle, values.end());
+                double upper = *middle;
+                if (values.size() % 2)
+                    return upper;
+                return (upper + *std::max_element(values.begin(), middle)) / 2;
+            };
             for (size_t pair = 0; pair < pairs; ++pair) {
-                Sample b{}, c{};
-                if (pair % 2 == 0) {
-                    b = measure(fixture, baseline.kernel, repeats);
-                    c = measure(fixture, candidate.kernel, repeats);
-                } else {
-                    c = measure(fixture, candidate.kernel, repeats);
-                    b = measure(fixture, baseline.kernel, repeats);
+                // One pair = reps adjacent baseline/candidate couples of short batches in ABBA order
+                // (the first order alternates between pairs). Adjacent batches see the same clock
+                // state, so each couple's ratio cancels frequency drift; the pair keeps their median.
+                for (size_t rep = 0; rep < reps; ++rep) {
+                    Sample b{}, c{};
+                    if ((pair + rep) % 2 == 0) {
+                        b = measure(fixture, baseline.kernel, repeats);
+                        c = measure(fixture, candidate.kernel, repeats);
+                    } else {
+                        c = measure(fixture, candidate.kernel, repeats);
+                        b = measure(fixture, baseline.kernel, repeats);
+                    }
+                    ratios[rep] = c.ticks / b.ticks;
+                    baseTicks[rep] = b.ticks;
+                    candTicks[rep] = c.ticks;
+                    baseNs[rep] = b.ns;
+                    candNs[rep] = c.ns;
                 }
                 if (pair)
                     std::cout << ',';
                 double work = double(groups) * double(repeats);
                 std::cout << "{\"order\":\"" << (pair % 2 == 0 ? "AB" : "BA")
-                          << "\",\"baseline_tsc_ticks_per_group\":" << b.ticks / work
-                          << ",\"candidate_tsc_ticks_per_group\":" << c.ticks / work
-                          << ",\"baseline_ns_per_group\":" << b.ns / work
-                          << ",\"candidate_ns_per_group\":" << c.ns / work << ",\"ratio\":" << c.ticks / b.ticks << '}';
+                          << "\",\"baseline_tsc_ticks_per_group\":" << median(baseTicks) / work
+                          << ",\"candidate_tsc_ticks_per_group\":" << median(candTicks) / work
+                          << ",\"baseline_ns_per_group\":" << median(baseNs) / work
+                          << ",\"candidate_ns_per_group\":" << median(candNs) / work << ",\"ratio\":" << median(ratios)
+                          << '}';
             }
             std::cout << "]}";
         }
