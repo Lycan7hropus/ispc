@@ -1015,6 +1015,55 @@ done:                                             ; preds = %loop
 ;; dot product
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; popcnt
+
+;; Varying int64: two-table nibble lookup with a single vpsadbw per 4 x i64
+;; (Lemire, Kurz, Rupp, "Roaring bitmaps: implementation of an optimized
+;; software library", 2018, fig. 2). The tables hold 4 + popcount(nibble) and
+;; 4 - popcount(nibble); vpsadbw sums |pos - neg| = popcount(lo) + popcount(hi)
+;; over the eight bytes of every i64, so no vpaddb is needed. On AVX2 this
+;; replaces eight scalar POPCNTs plus the extract/insert packing of the generic
+;; implementation.
+declare <32 x i8> @llvm.x86.avx2.pshuf.b(<32 x i8>, <32 x i8>) nounwind readnone
+declare <4 x i64> @llvm.x86.avx2.psad.bw(<32 x i8>, <32 x i8>) nounwind readnone
+
+define <4 x i64> @__popcnt_int64_x4_lookup(<4 x i64> %v) nounwind readnone alwaysinline {
+  %bytes = bitcast <4 x i64> %v to <32 x i8>
+  %low = and <32 x i8> %bytes, <i8 15, i8 15, i8 15, i8 15, i8 15, i8 15, i8 15, i8 15,
+                                i8 15, i8 15, i8 15, i8 15, i8 15, i8 15, i8 15, i8 15,
+                                i8 15, i8 15, i8 15, i8 15, i8 15, i8 15, i8 15, i8 15,
+                                i8 15, i8 15, i8 15, i8 15, i8 15, i8 15, i8 15, i8 15>
+  %high = lshr <32 x i8> %bytes, <i8 4, i8 4, i8 4, i8 4, i8 4, i8 4, i8 4, i8 4,
+                                  i8 4, i8 4, i8 4, i8 4, i8 4, i8 4, i8 4, i8 4,
+                                  i8 4, i8 4, i8 4, i8 4, i8 4, i8 4, i8 4, i8 4,
+                                  i8 4, i8 4, i8 4, i8 4, i8 4, i8 4, i8 4, i8 4>
+  %pos = call <32 x i8> @llvm.x86.avx2.pshuf.b(
+      <32 x i8> <i8 4, i8 5, i8 5, i8 6, i8 5, i8 6, i8 6, i8 7, i8 5, i8 6, i8 6, i8 7, i8 6, i8 7, i8 7, i8 8,
+                 i8 4, i8 5, i8 5, i8 6, i8 5, i8 6, i8 6, i8 7, i8 5, i8 6, i8 6, i8 7, i8 6, i8 7, i8 7, i8 8>,
+      <32 x i8> %low)
+  %neg = call <32 x i8> @llvm.x86.avx2.pshuf.b(
+      <32 x i8> <i8 4, i8 3, i8 3, i8 2, i8 3, i8 2, i8 2, i8 1, i8 3, i8 2, i8 2, i8 1, i8 2, i8 1, i8 1, i8 0,
+                 i8 4, i8 3, i8 3, i8 2, i8 3, i8 2, i8 2, i8 1, i8 3, i8 2, i8 2, i8 1, i8 2, i8 1, i8 1, i8 0>,
+      <32 x i8> %high)
+  %sum = call <4 x i64> @llvm.x86.avx2.psad.bw(<32 x i8> %pos, <32 x i8> %neg)
+  ret <4 x i64> %sum
+}
+
+define <8 x i32> @__popcnt_int64_varying(<8 x i64> %v, <8 x i32> %mask) nounwind readnone alwaysinline {
+  %v_low = shufflevector <8 x i64> %v, <8 x i64> poison, <4 x i32> <i32 0, i32 1, i32 2, i32 3>
+  %v_high = shufflevector <8 x i64> %v, <8 x i64> poison, <4 x i32> <i32 4, i32 5, i32 6, i32 7>
+  %count_low = call <4 x i64> @__popcnt_int64_x4_lookup(<4 x i64> %v_low)
+  %count_high = call <4 x i64> @__popcnt_int64_x4_lookup(<4 x i64> %v_high)
+  %count = shufflevector <4 x i64> %count_low, <4 x i64> %count_high,
+                         <8 x i32> <i32 0, i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 7>
+  %trunc = trunc <8 x i64> %count to <8 x i32>
+  ; Same select as the generic "mask ? r : 0": inactive lanes are zero.
+  %active = icmp ne <8 x i32> %mask, zeroinitializer
+  %masked = select <8 x i1> %active, <8 x i32> %trunc, <8 x i32> zeroinitializer
+  ret <8 x i32> %masked
+}
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; parallel bit deposit/extract
 
 bmi2_pdep_pext()
