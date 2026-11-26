@@ -12,6 +12,7 @@ bench_adapter.py TASK_DIR OUT_DIR
 Always writes OUT_DIR/result.json following the ispc-lab-bench README contract.
 Raw framework output is kept under OUT_DIR/raw/.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -35,10 +36,20 @@ T0_FIXTURES = {
                                            '.cpp': LAB / 'screen_examples/reduce_equal_scalar.S',
                                            '.so': LAB / 'screen_examples/reduce_equal_scalar.S',
                                            '.inc': LAB / 'screen_examples/reduce_equal_body.inc'}),
+    # 'masks' runs popcnt-i64-masks: every mask case (runtime all-on/even/odd/sparse/random/off,
+    # compile-time even, dependent chain) in one screen, against its own default baseline.
     'popcnt': dict(types={'int64'}, targets={'avx2-i32x8'},
-                   masks={'all': 'popcnt-i64'},
+                   masks={'all': 'popcnt-i64', 'masks': 'popcnt-i64-masks'},
                    default_baseline={suffix: LAB / 'screen_examples/popcnt_i64_scalar.S'
-                                     for suffix in ('.S', '.s', '.cpp', '.so')}),
+                                     for suffix in ('.S', '.s', '.cpp', '.so')},
+                   fixture_baselines={'popcnt-i64-masks': {
+                       suffix: LAB / 'screen_examples/popcnt_i64_ispc.S'
+                       for suffix in ('.S', '.s', '.cpp', '.so')}}),
+}
+# T1/full: builtins measured through a reviewed fixture packet (fixture_packet.py) instead of the
+# shuffle contexts. The packet manifest is pinned by its sha256 at dispatch time.
+T1_PACKETS = {
+    'popcnt': LAB / 'packets/popcnt_i64_avx2/packet.json',
 }
 EVAL_TYPES = {'int16', 'int64', 'double'}
 TIER_POLICY = {
@@ -133,16 +144,14 @@ def t0(task, task_dir, out_dir, result):
     candidate = find_one(task_dir, 'candidate', ('.S', '.s', '.cpp', '.so', '.inc'))
     if candidate is None:
         raise ValueError('T0 needs candidate.{S,s,cpp,so,inc} in the task folder')
-    baseline = find_one(task_dir, 'baseline', ('.S', '.s', '.cpp', '.so', '.inc'))
-    if baseline is None:
+    task_baseline = find_one(task_dir, 'baseline', ('.S', '.s', '.cpp', '.so', '.inc'))
+    if task_baseline is None:
         if candidate.suffix not in spec['default_baseline']:
             raise ValueError(f"T0 {task['builtin']} fixture has no default baseline for {candidate.suffix} candidates")
-        baseline = spec['default_baseline'][candidate.suffix]
-        result['notes'].append(f'baseline: lab default {baseline.relative_to(REPO)}')
     else:
-        result['notes'].append(f'baseline: task {baseline.name}')
-    if (baseline.suffix == '.inc') != (candidate.suffix == '.inc'):
-        raise ValueError('baseline and candidate must both be .inc bodies or both be kernels')
+        result['notes'].append(f'baseline: task {task_baseline.name}')
+        if (task_baseline.suffix == '.inc') != (candidate.suffix == '.inc'):
+            raise ValueError('baseline and candidate must both be .inc bodies or both be kernels')
 
     correct, aa_ok = True, True
     result.update(aa_cases=[], t0_seconds=[])
@@ -153,6 +162,10 @@ def t0(task, task_dir, out_dir, result):
         if fixture == 'mixed-mask' and candidate.suffix != '.inc':
             raise ValueError(f"mask '{mask}' uses the mixed-mask fixture, which needs .inc bodies")
         tag = 'all-on' if mask == 'all' else f'mixed-{mask}'
+        baseline = task_baseline
+        if baseline is None:
+            baseline = spec.get('fixture_baselines', {}).get(fixture, spec['default_baseline'])[candidate.suffix]
+            result['notes'].append(f'{tag}: baseline lab default {baseline.relative_to(REPO)}')
         if fixture == 'mixed-mask':
             result['notes'].append(f"mask '{mask}': T0 mixed-mask fixture covers all proper partial masks 1..254, "
                                    'not only this pattern')
@@ -217,10 +230,16 @@ def evaluate_tier(task, task_dir, out_dir, result):
         result['notes'].append('evaluate.py has its own fixed mask/context panel; task masks are not applied')
     revision = os.environ.get('BENCH_BASELINE_REV') or subprocess.check_output(
         ['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip()
+    packet = T1_PACKETS.get(task['builtin'])
+    if packet is None and task['builtin'] != 'shuffle':
+        result['notes'].append(f"no T1 packet for builtin '{task['builtin']}': evaluate.py measures its shuffle contexts")
     policy = dict(repo=str(REPO), baseline_revision=revision, llvm=str(LLVM),
                   cache=os.environ.get('BENCH_CACHE', str(Path.home() / '.cache/ispc-lab-bench/evaluator')),
                   type=next(iter(types)), cpu=CPU, jobs=int(os.environ.get('BENCH_JOBS', '12')),
                   timeout=int(os.environ.get('BENCH_TIMEOUT', '3600')), **TIER_POLICY[task['tier']])
+    if packet is not None:
+        policy.update(packet=str(packet), packet_sha256=hashlib.sha256(packet.read_bytes()).hexdigest())
+        result['notes'].append(f"T1 fixture packet {packet.relative_to(REPO)} (sha256 {policy['packet_sha256'][:12]})")
     raw = out_dir / 'raw'
     raw.mkdir(parents=True, exist_ok=True)
     request = dict(hypothesis=task.get('notes') or f"{task['builtin']} candidate from {task_dir.name}",

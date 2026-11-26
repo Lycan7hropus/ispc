@@ -37,9 +37,12 @@ def load(path, expected_sha256=None):
     if not isinstance(manifest['name'], str) or not re.fullmatch('[a-zA-Z0-9_-]+', manifest['name']):
         raise ValueError('invalid fixture packet name')
     for name in names(manifest['allowed_paths'], 'allowed_paths'):
-        if (not re.fullmatch(r'builtins/[a-zA-Z0-9_./-]+\.(ll|m4)', name) or
+        # Builtin sources, plus explicitly listed lit tests that pin the old codegen of the builtin
+        # (a reviewed packet names each one; the full lit suite still runs on the candidate).
+        if (not (re.fullmatch(r'builtins/[a-zA-Z0-9_./-]+\.(ll|m4)', name) or
+                 re.fullmatch(r'tests/lit-tests/[a-zA-Z0-9_.-]+\.ispc', name)) or
                 '..' in Path(name).parts):
-            raise ValueError('packet may allow only explicit builtin source paths')
+            raise ValueError('packet may allow only explicit builtin source paths and lit tests')
     cases = names(manifest['cases'], 'cases')
     discovery = names(manifest['discovery_cases'], 'discovery_cases')
     if not set(discovery) <= set(cases):
